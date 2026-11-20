@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}dopplergeo{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="{{ url_for('index') }}"><span class="mark" aria-hidden="true">◠</span> dopplergeo</a>
+  <span class="tag">local · offline</span>
+</header>
+<main>
+{% block body %}{% endblock %}
+</main>
+<footer class="foot">Analyse only recordings you own or are explicitly authorized to analyse. This server makes no outbound
+network requests and this page loads no third-party resources.</footer>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

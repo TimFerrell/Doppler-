@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% set tab = tab or 'locate' %}
+{% block body %}
+<section class="hero">
+  <h1>Locate a recording from aircraft Doppler curves</h1>
+  <p>Upload your own recording and your ADS-B receiver logs. The engine tones of passing propeller aircraft are matched
+  against their flight tracks to estimate where the recording was made.</p>
+</section>
+
+{% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+
+<div class="tabs" role="tablist">
+  <button role="tab" data-tab="locate" class="{{ 'on' if tab == 'locate' }}">Locate</button>
+  <button role="tab" data-tab="measure" class="{{ 'on' if tab == 'measure' }}">Measure flyovers</button>
+  <button role="tab" data-tab="synth" class="{{ 'on' if tab == 'synth' }}">Synthetic demo</button>
+</div>
+
+<form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data">
+  <input type="hidden" name="tab" value="locate">
+  <div class="grid2">
+    <label>Recording <small>WAV, FLAC, MP3…</small>
+      <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff" required></label>
+    <label>ADS-B data <small>unified .parquet, or tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code> files, or a .zip of them</small>
+      <input type="file" name="adsb" multiple accept=".parquet,.json,.jsonl,.gz,.zip" required></label>
+  </div>
+  <fieldset>
+    <legend>Search region</legend>
+    <div class="grid3">
+      <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" placeholder="39.3764" required></label>
+      <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" placeholder="-87.5697" required></label>
+      <label>Radius (km) <input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>Recording details <small>optional</small></legend>
+    <div class="grid3">
+      <label>Start time (UTC) <input name="start_utc" value="{{ form.start_utc }}" placeholder="2026-11-20T14:03:12Z"></label>
+      <label>Ground elevation (m MSL) <input name="elevation_m" inputmode="decimal" value="{{ form.elevation_m }}" placeholder="{{ cfg.elevation.constant_m }}"></label>
+      <label>DEM GeoTIFF path on this machine <input name="dem_path" value="{{ form.dem_path }}" placeholder="data/dem/mosaic.tif"></label>
+      <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
+      <label>Known latitude <small>to measure error</small><input name="truth_lat" inputmode="decimal" value="{{ form.truth_lat }}"></label>
+      <label>Known longitude <input name="truth_lon" inputmode="decimal" value="{{ form.truth_lon }}"></label>
+    </div>
+  </fieldset>
+  <details>
+    <summary>Advanced</summary>
+    <div class="grid3">
+      <label>Refinement levels <small>{{ cfg.grid.step_m|int }} m halved per level</small>
+        <input name="refine_levels" inputmode="numeric" value="{{ form.refine_levels or cfg.grid.refine_levels }}"></label>
+      <label>Clock window ± (s) <small>smaller if your clock is trustworthy</small>
+        <input name="dt_sweep_s" inputmode="decimal" value="{{ form.dt_sweep_s or cfg.score.dt_sweep_s }}"></label>
+      <label>Harmonics scored <input name="harmonics" value="{{ form.harmonics or cfg.score.harmonics|join(',') }}"></label>
+    </div>
+  </details>
+  {% include "_attest.html" %}
+  <button class="primary" type="submit">Run locate</button>
+</form>
+
+<form class="card panel {{ 'on' if tab == 'measure' }}" data-panel="measure" method="post" action="{{ url_for('submit_measure') }}" enctype="multipart/form-data">
+  <input type="hidden" name="tab" value="measure">
+  <p class="muted">Detects flyovers and fits each Doppler curve (f0, speed, closest distance, time of closest approach). No ADS-B needed.</p>
+  <div class="grid2">
+    <label>Recording <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff" required></label>
+    <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
+  </div>
+  {% include "_attest.html" %}
+  <button class="primary" type="submit">Run measure</button>
+</form>
+
+<form class="card panel {{ 'on' if tab == 'synth' }}" data-panel="synth" method="post" action="{{ url_for('submit_synth') }}">
+  <input type="hidden" name="tab" value="synth">
+  <p class="muted">Generates a synthetic flyover (known location) and runs the full pipeline on it. About 15 s per seed.</p>
+  <label class="narrow">Seeds <input name="seeds" value="{{ form.seeds or '1,2,3' }}"></label>
+  <button class="primary" type="submit">Run demo</button>
+</form>
+
+<section class="card">
+  <h2>Jobs</h2>
+  {% if jobs %}
+  <table class="jobs">
+    <thead><tr><th>Job</th><th>State</th><th>Created</th><th>Duration</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr><td><a href="{{ url_for('job_page', job_id=j.id) }}">{{ j.title }}</a></td>
+          <td><span class="state {{ j.state }}">{{ j.state }}</span></td>
+          <td>{{ j.created|ts }}</td><td>{{ j|dur }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">No jobs yet.</p>{% endif %}
+</section>
+{% endblock %}

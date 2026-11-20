@@ -11,3 +11,5 @@ librosa
 soundfile
 pytest
 pyyaml
+flask
+markdown

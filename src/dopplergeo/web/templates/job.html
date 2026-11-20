@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · dopplergeo{% endblock %}
+{% block body %}
+<p><a href="{{ url_for('index') }}">← All jobs</a></p>
+<section class="card" id="job" data-job="{{ job.id }}" data-state="{{ job.state }}">
+  <div class="jobhead">
+    <h1>{{ job.title }}</h1>
+    <span class="state {{ job.state }}" id="state">{{ job.state }}</span>
+  </div>
+  <p class="muted">Created {{ job.created|ts }} · ran {{ job|dur }}{% if job.state == 'done' %} · <a href="{{ url_for('job_zip', job_id=job.id) }}">download all results (.zip)</a>{% endif %}</p>
+  <div class="alert" id="error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
+  {% for w in job.warnings or [] %}<div class="note">{{ w }}</div>{% endfor %}
+  <details {% if job.state in ('queued', 'running', 'failed') %}open{% endif %}>
+    <summary>Log</summary>
+    <pre class="log" id="log">loading…</pre>
+  </details>
+</section>
+
+{% if meas %}
+<section class="card">
+  <h2>Measured flyovers</h2>
+  <table class="num">
+    <thead><tr><th>#</th><th>heard CPA (s)</th><th>f0 (Hz)</th><th>speed (m/s)</th><th>closest distance (m)</th><th>fit RMS (Hz)</th><th>ok</th></tr></thead>
+    <tbody>{% for e in meas.events %}
+      <tr><td>{{ loop.index }}</td><td>{{ '%.2f'|format(e.t_cpa_heard) }}</td><td>{{ '%.2f'|format(e.f0) }}</td>
+        <td>{{ '%.1f'|format(e.v) }}</td><td>{{ '%.0f'|format(e.d) }}</td><td>{{ '%.3f'|format(e.rms_hz) }}</td><td>{{ '✓' if e.success else '✗' }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  <p><a href="{{ url_for('job_file', job_id=job.id, relpath='out/measurements.yaml') }}">measurements.yaml</a></p>
+</section>
+{% endif %}
+
+{% for r in results %}
+<section class="card result">
+  <div class="jobhead">
+    <h2>{{ r.name if results|length > 1 else 'Result' }}</h2>
+    <a class="button" href="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/report.md') }}">Full report</a>
+  </div>
+  {% if r.top %}
+  <div class="stats">
+    <div><span class="k">Best location</span><span class="v mono">{{ '%.6f'|format(r.top.lat) }}, {{ '%.6f'|format(r.top.lon) }}</span></div>
+    {% if r.truth_err %}<div><span class="k">Error vs known location</span><span class="v">{{ r.truth_err }} m</span></div>{% endif %}
+    {% if r.top.margin is not none %}<div><span class="k">Margin over next flight pair</span><span class="v">{{ '%.1f'|format(100 * r.top.margin) }} %</span></div>{% endif %}
+    <div><span class="k">Flights</span><span class="v mono small">{{ r.top.combo }}</span></div>
+  </div>
+  {% endif %}
+  <div class="mapwrap">
+    <svg class="map" data-src="{{ url_for('job_candidates', job_id=job.id, run=r.rel) }}" role="img" aria-label="Candidate locations coloured by score"></svg>
+    <div class="maplegend"><span class="ramp"></span> low → high score · <span class="best">◯</span> best · <span class="truth">★</span> known location · grid north up</div>
+  </div>
+  <div class="gallery">
+    {% for img in r.images %}
+    <figure><a href="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/' ~ img) }}"><img loading="lazy" src="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/' ~ img) }}" alt="{{ img }}"></a><figcaption>{{ img }}</figcaption></figure>
+    {% endfor %}
+  </div>
+  <p class="files">{% for c in r.csvs %}<a href="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/' ~ c) }}?download">{{ c }}</a>{% endfor %}</p>
+</section>
+{% endfor %}
+{% endblock %}

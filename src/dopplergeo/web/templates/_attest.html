@@ -1,0 +1,5 @@
+<div class="attest">
+  <label class="check"><input type="checkbox" name="attest" value="yes" {{ 'checked' if form.attest == 'yes' }} required>
+    <span>I own this recording, or I am explicitly authorized to analyse it.</span></label>
+  <label class="narrow">Your name <small>recorded in the report</small><input name="operator" value="{{ form.operator }}"></label>
+</div>

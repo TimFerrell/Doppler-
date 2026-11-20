@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Report · {{ job.title }}{% endblock %}
+{% block body %}
+<p><a href="{{ url_for('job_page', job_id=job.id) }}">← {{ job.title }}</a> · <a href="?raw">raw markdown</a></p>
+<article class="card report">{{ body|safe }}</article>
+{% endblock %}

@@ -175,6 +175,17 @@ def cmd_locate_area(args, cfg) -> int:
              "after Phase A passes on an operator-supplied recording.")
 
 
+def cmd_serve(args, cfg) -> int:
+    from .web import create_app
+
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning("serving on %s: anyone who can reach this address can upload audio and see results", args.host)
+    app = create_app(args.jobs_dir, args.config, args.max_upload_mb)
+    print(f"dopplergeo web interface: http://{args.host}:{args.port}/  (jobs in {args.jobs_dir})")
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+    return 0
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     p = argparse.ArgumentParser(prog="dopplergeo", description=__doc__)
@@ -211,13 +222,19 @@ def main(argv=None) -> int:
             s.add_argument("--adsb", required=True)
             s.add_argument("--out", required=True)
 
+    s = sub.add_parser("serve", help="local web interface")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--jobs-dir", default="data/out/web")
+    s.add_argument("--max-upload-mb", type=int, default=4096)
+
     args = p.parse_args(argv)
     args.command_line = "dopplergeo " + " ".join(shlex.quote(a) for a in argv)
     _setup_logging(args.verbose)
     cfg = config.load_config(args.config)
     np.seterr(invalid="ignore")
     return {"synth-demo": cmd_synth_demo, "ingest-adsb": cmd_ingest, "measure": cmd_measure, "locate": cmd_locate,
-            "locate-area": cmd_locate_area}[args.cmd](args, cfg)
+            "locate-area": cmd_locate_area, "serve": cmd_serve}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,33 @@ pip install -r requirements.txt && pip install -e .
 pytest -q            # offline, deterministic, ~1-2 min on 4 cores
 ```
 
+## Web interface
+
+```bash
+dopplergeo serve            # then open http://127.0.0.1:8765/  (run from the repository root)
+dopplergeo --config my.yaml serve --port 8765 --jobs-dir data/out/web
+```
+
+A local web front end to the same pipeline:
+
+* **Locate**: upload a recording and ADS-B data (a unified `.parquet`, or tar1090 / readsb JSON
+  logs, or a `.zip` of them; logs are ingested automatically), set the search region and optional
+  start time, elevation/DEM, flyover times and known location. Advanced: refinement levels, clock
+  window, harmonics.
+* **Measure flyovers**: Doppler-curve fits only, no ADS-B needed.
+* **Synthetic demo**: the Phase 0 validation for any seeds.
+
+Each submission becomes a job (one runs at a time, the rest queue) with a live log, result
+summary (best location, error vs a known location, margin over the next flight pair), a candidate
+map, the plots, the rendered report, CSV downloads and a results `.zip`. Jobs are stored under
+`--jobs-dir` and survive restarts.
+
+Every job runs the same CLI commands, so results match the command line exactly; the authorization
+attestation is a required checkbox. The server binds to `127.0.0.1` by default, makes no outbound
+network requests, and its pages load no third-party scripts or map tiles (the candidate map is drawn
+locally), so recording locations never leave the machine. Binding to another address logs a warning:
+there is no login, so anyone who can reach the port can submit jobs and read results.
+
 ## CLI
 
 ```bash
@@ -35,6 +62,7 @@ dopplergeo measure --audio rec.wav [--events "61.5,981"] [--out measurements.yam
 dopplergeo --config my.yaml locate --audio rec.wav --region center=LAT,LON,radius_km=R \
            --adsb data/adsb/day.parquet --out data/out/run1 --attest-authorized [--truth-latlon LAT,LON]
 dopplergeo locate-area ...   # Phase B: not built yet (gated)
+dopplergeo serve [--host 127.0.0.1] [--port 8765] [--jobs-dir data/out/web]
 ```
 
 Every run writes `out/<run>/report.md` (inputs + SHA-256, attestation, per-event fits, candidate

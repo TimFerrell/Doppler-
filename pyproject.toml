@@ -14,5 +14,8 @@ dopplergeo = "dopplergeo.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+dopplergeo = ["web/templates/*.html", "web/static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
