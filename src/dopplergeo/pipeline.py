@@ -4,6 +4,7 @@ from __future__ import annotations
 import itertools
 import logging
 import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -109,11 +110,13 @@ def score_points(lat, lon, elev: geo.Elevation, tracks: list[adsb.Track], events
         import multiprocessing as mp
         import warnings
 
-        # fork: workers inherit the payload without pickling and callers need no __main__ guard.
-        # Workers only run numpy on private arrays, so the fork-with-threads caveat does not bite.
+        # Linux: fork (workers inherit the payload without pickling; callers need no __main__ guard;
+        # workers only run numpy on private arrays, so the fork-with-threads caveat does not bite).
+        # macOS/Windows: spawn -- forking after Apple system frameworks are loaded can crash workers.
+        method = "fork" if sys.platform.startswith("linux") else "spawn"
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
-            with ProcessPoolExecutor(workers, mp_context=mp.get_context("fork"), initializer=_worker_init,
+            with ProcessPoolExecutor(workers, mp_context=mp.get_context(method), initializer=_worker_init,
                                      initargs=(payload,)) as ex:
                 outs = list(ex.map(_worker_run, batches))
     else:
