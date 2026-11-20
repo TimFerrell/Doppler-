@@ -8,3 +8,4 @@ data/audio/
 data/dem/
 data/out/
 !data/icao_jet_types.csv
+*.bundle
