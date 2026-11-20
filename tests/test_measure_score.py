@@ -79,3 +79,29 @@ def test_ridge_snr_and_band(tone_spec):
     rg = measure.extract_ridge(spec, (80, 300))
     assert np.all((rg.freq >= 80) & (rg.freq <= 300))
     assert np.median(rg.snr_db) > 10
+
+
+def test_detects_flyover_in_short_clip(tone_spec):
+    """A ~30 s clip that still contains the closest approach is detected (phone-video case)."""
+    from dopplergeo import config
+
+    cfg = config.load_config()
+    x = _tone_audio(noise=0.3)[int(50 * SR):int(80 * SR)]
+    spec = audio.spectrogram_from_config(x, SR, cfg)
+    events, diag = measure.detect_events(spec, cfg, C)
+    assert len(events) == 1, diag
+    assert events[0].t_cpa_heard == pytest.approx(TRUE["t_c"] + TRUE["d"] / C - 50, abs=0.5)
+
+
+def test_noise_only_gives_reasons_and_report(tmp_path):
+    from dopplergeo import config, report
+
+    cfg = config.load_config()
+    x = np.random.default_rng(1).normal(0, 0.1, 30 * SR).astype(np.float32)
+    spec = audio.spectrogram_from_config(x, SR, cfg)
+    events, diag = measure.detect_events(spec, cfg, C)
+    assert events == [] and diag["rejected"] and diag["rejected"][0]["reasons"]
+    p = report.write_no_events_report(tmp_path, spec, cfg, diag, events, [], "test", "t")
+    txt = p.read_text()
+    assert "no usable flyover" in txt and "Why each part was rejected" in txt
+    assert (tmp_path / "recording_spectrogram.png").exists()

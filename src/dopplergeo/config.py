@@ -90,6 +90,7 @@ DEFAULTS: dict[str, Any] = {
         "audible_radius_m": 10000.0,
         "refine_top_n": 50,
         "refine_levels": 1,
+        "max_points": 40000,  # larger areas start coarser and get extra refinement levels
     },
     "adsb": {
         "jet_types_csv": "data/icao_jet_types.csv",
@@ -102,6 +103,8 @@ DEFAULTS: dict[str, Any] = {
     "locate": {
         "time_reference": "measured_cpa",  # measured_cpa (locked, Phase A) | absolute
         "time_tolerance_s": 300.0,
+        "speed_tolerance_mps": 15.0,  # flight speed screen vs the fitted speed: max(abs, frac * v)
+        "speed_tolerance_frac": 0.25,
         "top_k": 10,
     },
     "synth": {

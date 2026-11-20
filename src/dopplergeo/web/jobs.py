@@ -106,6 +106,8 @@ class JobManager:
         handler = logging.FileHandler(log_path)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         handler.setLevel(logging.INFO)
+        me = threading.get_ident()
+        handler.addFilter(lambda rec: rec.thread == me)  # not the web server's request log
         root = logging.getLogger()
         root.addHandler(handler)
         if root.level > logging.INFO or root.level == logging.NOTSET:

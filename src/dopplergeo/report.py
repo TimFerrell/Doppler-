@@ -187,3 +187,65 @@ def write_report(out_dir: Path, ctx: dict) -> Path:
     path = out_dir / "report.md"
     path.write_text("\n".join(L))
     return path
+
+
+def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, title) -> Path:
+    """Diagnostic report when no usable flyover was found: spectrogram + reasons, in plain language."""
+    from .measure import extract_ridge
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lo, hi = cfg["detect"]["band_hz"]
+    sel = (spec.freqs >= max(20.0, lo - 20)) & (spec.freqs <= hi + 100)
+    S = spec.db[sel]
+    fig, ax = plt.subplots(figsize=(11, 5), dpi=110)
+    vmin, vmax = np.percentile(S, [5, 99.7])
+    ax.imshow(S, origin="lower", aspect="auto", cmap="magma", vmin=vmin, vmax=vmax,
+              extent=[spec.times[0], spec.times[-1], spec.freqs[sel][0], spec.freqs[sel][-1]])
+    rg = extract_ridge(spec, (lo, hi))
+    good = rg.snr_db >= cfg["measure"]["min_column_snr_db"]
+    ax.plot(rg.times[good], rg.freq[good], ".", ms=2.5, color="#5fd3ff", alpha=0.8,
+            label="strongest tone per moment (clear ones only)")
+    ax.axhspan(lo, hi, color="w", alpha=0.04)
+    ax.set_xlabel("seconds into the recording")
+    ax.set_ylabel("Hz")
+    ax.set_title("What the recording contains (40–400 Hz): a passing prop plane shows as a line that slides down in pitch")
+    ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_dir / "recording_spectrogram.png")
+    plt.close(fig)
+    dur = float(spec.times[-1] - spec.times[0] + spec.window / spec.sr)
+    L = [f"# {title}: no usable flyover found", "", "## Authorization", "", attestation, "", "## Inputs", ""]
+    for i in inputs or []:
+        L.append(f"- {i['name']}: `{i['path']}` (sha256 `{i.get('sha256', '-')}`)")
+    L += ["", "## What happened", "",
+          f"The recording is {dur:.0f} s long. The tool looks for the pitch curve of a propeller plane passing by: the "
+          "engine hum (roughly 60–300 Hz) slides from a higher to a lower pitch as the plane comes closer and then "
+          "moves away, steepest at the moment it is nearest. No part of this recording showed a complete curve "
+          "like that, so there was nothing to match against the flight data.", ""]
+    rej = (diag or {}).get("rejected") or []
+    if rej:
+        L += ["### Why each part was rejected", ""]
+        for r in rej:
+            w = r["window_s"]
+            L.append(f"- **{w[0]:.0f}–{w[1]:.0f} s**: " + "; ".join(r["reasons"]))
+        L.append("")
+    if meas:
+        L += ["### Flyovers given or found but not fitted", ""]
+        for k, m in enumerate(meas, 1):
+            L.append(f"- event {k} around {m.t_cpa_heard:.1f} s: fit error {m.rms_hz:.2f} Hz, {m.n_cols} usable moments")
+        L.append("")
+    L += ["## What to try", "",
+          "- Look at the spectrogram below. If you can see a line sliding down in pitch, note the time where it "
+          "drops fastest and enter it under *When the planes passed* in the Locate form.",
+          "- Record longer: about a minute before and after the loudest moment of a flyover. The tool needs the "
+          "moment the plane is nearest to be inside the recording, ideally in the middle."
+          + (f" This recording is only {dur:.0f} s long." if dur < 90 else ""),
+          "- Propeller planes only: jets and helicopters do not produce a usable steady engine tone.",
+          "- Wind, talking and traffic noise can drown the engine tone; a sheltered spot helps.", "",
+          "## Plots", "", "### The recording", "", "![recording spectrogram](recording_spectrogram.png)", ""]
+    if diag:
+        L += ["## Detector details", "", "```json", json.dumps(diag, indent=1, default=str), "```", ""]
+    p = out_dir / "report.md"
+    p.write_text("\n".join(L))
+    return p

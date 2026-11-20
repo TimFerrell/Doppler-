@@ -133,3 +133,16 @@ def test_dem_geotiff_sampler(tmp_path):
     assert e(40.85, -99.75) == pytest.approx(120.0)  # row 1, col 2
     with pytest.raises(ValueError):
         e(30.0, -99.0)  # outside the raster
+
+
+def test_large_search_area_starts_coarse(cfg):
+    import math
+
+    step, levels = float(cfg["grid"]["step_m"]), int(cfg["grid"]["refine_levels"])
+    n_full = math.pi * (100_000 / step) ** 2
+    extra = 0
+    while n_full / 4 ** extra > cfg["grid"]["max_points"]:
+        extra += 1
+    g = grid.make_grid((28.6, -81.4), 100_000, step * 2 ** extra)
+    assert len(g) <= cfg["grid"]["max_points"] * 1.05
+    assert step * 2 ** extra / 2 ** (levels + extra) <= step / 2  # refinement still ends at the normal resolution

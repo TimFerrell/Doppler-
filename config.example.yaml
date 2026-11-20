@@ -85,6 +85,7 @@ grid:
   audible_radius_m: 10000.0
   refine_top_n: 50
   refine_levels: 1
+  max_points: 40000
 
 # drop KNOWN jets only (unknown/null type codes are kept); on_missing_velocity: error | drop
 adsb:
@@ -99,6 +100,8 @@ adsb:
 locate:
   time_reference: measured_cpa
   time_tolerance_s: 300.0
+  speed_tolerance_mps: 15.0
+  speed_tolerance_frac: 0.25
   top_k: 10
 
 # Phase 0 synthetic fixture parameters

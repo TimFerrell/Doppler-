@@ -14,7 +14,9 @@
     {% for st in progress.steps %}<li class="{{ 'done' if st.done else ('active' if st.active else '') }}"><span class="label">{{ st.label }}</span>{% if st.done and st.detail %}<span class="detail">{{ st.detail }}</span>{% elif st.active and st.active_detail %}<span class="detail">{{ st.active_detail }}</span>{% endif %}</li>{% endfor %}
   </ol>
   <div class="alert" id="error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
-  {% if job.state == 'failed' %}<p class="hint">Something went wrong; the technical log below says what. Common causes: the flight data does not
+  {% if job.state == 'failed' and results %}<p class="hint">The tool stopped early; the report below shows what it found in the
+    recording and why it stopped.</p>{% endif %}
+  {% if job.state == 'failed' and not results %}<p class="hint">Something went wrong; the technical log below says what. Common causes: the flight data does not
     cover the recording's date or area, no plane was loud enough in the recording, or the recording has no start time and the
     flight data covers many hours.</p>{% endif %}
   {% for w in job.warnings or [] %}<div class="note">{{ w }}</div>{% endfor %}
@@ -85,11 +87,12 @@
     </ul>
   </div>
   {% endif %}
-  <div class="mapwrap">
+  {% if r.has_map %}<div class="mapwrap">
     <div class="resultmap" data-src="{{ url_for('job_candidates', job_id=job.id, run=r.rel) }}" role="img" aria-label="Candidate locations on a US map"></div>
     <div class="maplegend"><span class="ramp"></span> candidate score, low → high · <span class="best">◯</span> best ·
       <span class="truth">★</span> known location · <span class="trk best-trk">━</span> flights used · <span class="trk">━</span> other flights · dashed circle: search region</div>
   </div>
+  {% endif %}
   <div class="gallery">
     {% for img in r.images %}
     <figure><a href="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/' ~ img) }}"><img loading="lazy" src="{{ url_for('job_file', job_id=job.id, relpath=r.rel ~ '/' ~ img) }}" alt="{{ img }}"></a><figcaption>{{ img }}</figcaption></figure>

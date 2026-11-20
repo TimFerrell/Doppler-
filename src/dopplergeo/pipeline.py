@@ -144,6 +144,18 @@ def candidate_tracks_per_event(tracks, events, proj, region_radius_m, cfg, audio
         else:
             lo = hi = None
         q = filters.qualifying_tracks(tracks, proj, region_radius_m, audible, lo, hi)
+        if lo is not None and np.isfinite(ev.meas.v):
+            # cheap speed screen: the plane's ground speed around the event must be close to the fitted speed
+            tol_v = max(float(cfg["locate"]["speed_tolerance_mps"]), float(cfg["locate"]["speed_tolerance_frac"]) * ev.meas.v)
+            keep = []
+            for tr in q:
+                sub = tr.subset(lo, hi)
+                if sub is None:
+                    continue
+                spd = np.linalg.norm(sub.vel, axis=1)
+                if np.any(np.abs(spd - ev.meas.v) <= tol_v):
+                    keep.append(tr)
+            q = keep
         out.append([(tr, lo, hi) for tr in q])
     return out
 
@@ -154,9 +166,19 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
     g = cfg["grid"]
     step = float(g["step_m"])
     audible = float(g["audible_radius_m"])
+    levels = int(g["refine_levels"])
+    # Large search areas start on a coarser lattice (at most grid.max_points spots) and refine down
+    # to the normal resolution: each refinement level halves the step around the best spots.
+    n_full = np.pi * (radius_m / step) ** 2
+    extra = 0
+    while n_full / 4 ** extra > float(g["max_points"]):
+        extra += 1
+    step *= 2 ** extra
+    levels += extra
     base = gridmod.make_grid(center, radius_m, step)
     proj = base.proj
-    slog.count("grid", "-", len(base), f"{step:.0f} m step, radius {radius_m / 1000:.1f} km")
+    slog.count("grid", "-", len(base), f"{step:.0f} m step, radius {radius_m / 1000:.1f} km"
+               + (f" (coarse start for a large area; {levels} refinement levels)" if extra else ""))
     per_event = candidate_tracks_per_event(tracks, events, proj, radius_m, cfg, audio_start)
     for i, lst in enumerate(per_event):
         slog.count(f"qualifying tracks e{i + 1}", len(tracks), len(lst),
@@ -186,7 +208,7 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
         stage_res = [res]
         cur = res
         cur_step = step
-        for lvl in range(int(g["refine_levels"])):
+        for lvl in range(levels):
             top = cur.nlargest(int(g["refine_top_n"]), "score")
             rg = gridmod.refine(proj, top["x"].to_numpy(), top["y"].to_numpy(), cur_step)
             cur_step = rg.step
@@ -261,9 +283,13 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
             meas = [measure.fit_event(spec, cfg, c, float(t), manual=True) for t in events_spec]
     bad = [i + 1 for i, m in enumerate(meas) if not m.success]
     slog.count("events", "-", len(meas), f"failed fits: {bad}" if bad else "all fits ok")
-    if not meas:
-        raise RuntimeError("no flyover events detected; pass event times explicitly (--events)")
-    if bad:
+    if not meas or bad:
+        from . import report as _report
+
+        _report.write_no_events_report(out, spec, cfg, detect_diag, meas, inputs, attestation, title)
+        if not meas:
+            raise RuntimeError("no plane flyover was found in the recording; see the report for what was heard and "
+                               "why each part was rejected (or give flyover times explicitly)")
         raise RuntimeError(f"curve fit failed for event(s) {bad}: {[meas[i - 1].to_dict() for i in bad]}")
     events = make_events(spec, meas, cfg)
 

@@ -146,24 +146,46 @@ def detect_events(spec: Spectrogram, cfg: dict, c: float) -> tuple[list[Measurem
     band = tuple(d["band_hz"])
     W, step = float(d["window_s"]), float(d["step_s"])
     t0, t1 = float(spec.times[0]), float(spec.times[-1])
-    diag = {"windows": 0, "energetic": 0, "s_curve": 0}
+    diag = {"windows": 0, "energetic": 0, "s_curve": 0, "duration_s": round(t1 - t0, 1), "rejected": []}
     cands: list[Measurement] = []
-    starts = np.arange(t0, max(t0, t1 - W) + 1e-9, step) if t1 - t0 > W else np.array([t0])
+    short = t1 - t0 <= W
+    starts = np.arange(t0, max(t0, t1 - W) + 1e-9, step) if not short else np.array([t0])
+    # a clip shorter than one window is fitted whole; its closest approach may sit nearer the edges
+    margin = 0.1 if short else 0.2
     for s in starts:
         diag["windows"] += 1
         e = min(s + W, t1)
         ridge = extract_ridge(spec, band, s, e)
-        if np.mean(ridge.snr_db >= cfg["measure"]["min_column_snr_db"]) < float(d["min_coverage"]):
+        cover = float(np.mean(ridge.snr_db >= cfg["measure"]["min_column_snr_db"]))
+        rec = {"window_s": [round(float(s), 1), round(float(e), 1)], "tone_coverage": round(cover, 2), "reasons": []}
+        if cover < float(d["min_coverage"]):
+            rec["reasons"].append(f"a clear engine tone is present in only {cover:.0%} of the window "
+                                  f"(needs {float(d['min_coverage']):.0%})")
+            diag["rejected"].append(rec)
             continue
         diag["energetic"] += 1
         meas, _ = fit_curve(spec, cfg, c, s, e, band)
-        lo, hi = s + 0.2 * (e - s), e - 0.2 * (e - s)
-        if not (np.isfinite(meas.rms_hz) and meas.rms_hz <= float(d["max_rms_hz"])
-                and meas.inlier_frac >= float(d["min_inlier_frac"]) and meas.spread_hz >= float(d["min_spread_hz"])
-                and lo <= meas.t_cpa_heard <= hi):
+        lo, hi = s + margin * (e - s), e - margin * (e - s)
+        rec["fit"] = {k: (round(float(getattr(meas, k)), 2) if np.isfinite(getattr(meas, k)) else None)
+                      for k in ("f0", "v", "d", "t_cpa_heard", "rms_hz", "spread_hz", "inlier_frac")}
+        if not np.isfinite(meas.rms_hz) or meas.rms_hz > float(d["max_rms_hz"]):
+            rec["reasons"].append(f"the tone does not follow a single plane's Doppler curve "
+                                  f"(fit error {meas.rms_hz:.2f} Hz, limit {float(d['max_rms_hz'])} Hz)")
+        if meas.inlier_frac < float(d["min_inlier_frac"]):
+            rec["reasons"].append(f"only {meas.inlier_frac:.0%} of the tone points fit the curve")
+        if meas.spread_hz < float(d["min_spread_hz"]):
+            rec["reasons"].append(f"the pitch barely changes ({meas.spread_hz:.1f} Hz drop, needs "
+                                  f"{float(d['min_spread_hz'])} Hz): no plane passing, or far away")
+        if not lo <= meas.t_cpa_heard <= hi:
+            rec["reasons"].append(f"the closest approach (fitted at {meas.t_cpa_heard:.1f} s) is not inside the "
+                                  f"recording's middle part ({lo:.1f}–{hi:.1f} s): the clip misses the moment the plane "
+                                  "was nearest")
+        if rec["reasons"]:
+            diag["rejected"].append(rec)
             continue
         diag["s_curve"] += 1
         cands.append(meas)
+    diag["rejected"] = diag["rejected"][:12]
     cands.sort(key=lambda m: m.t_cpa_heard)
     merged: list[list[Measurement]] = []
     for m in cands:
