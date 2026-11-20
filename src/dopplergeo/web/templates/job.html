@@ -7,6 +7,14 @@
     <h1>{{ job.title }}</h1>
     <span class="state {{ job.state }}" id="state">{{ job.state }}</span>
   </div>
+  {% if job.state in ('done', 'failed') %}
+  <div class="jobactions">
+    <form method="post" action="{{ url_for('job_retry', job_id=job.id) }}" class="inline">
+      <button class="primary" type="submit" title="Run this job again with the same files and settings, on the current version">↻ Retry</button></form>
+    {% if job.kind == 'locate' %}<a class="button ghost" href="{{ url_for('index', **{'from': job.id}) }}" title="Open the Locate form filled in from this job, with its files attached">✎ Edit &amp; run again</a>{% endif %}
+    {% if job.params.retry_of %}<span class="muted small">retry of <a href="{{ url_for('job_page', job_id=job.params.retry_of) }}">an earlier job</a></span>{% endif %}
+  </div>
+  {% endif %}
   <p class="muted">Created {{ job.created|ts }} · ran {{ job|dur }}{% if job.state == 'done' %} · <a href="{{ url_for('job_zip', job_id=job.id) }}">download all results (.zip)</a>{% endif %}</p>
   <p class="now" id="now" {% if not progress.now %}hidden{% endif %}>{{ progress.now or '' }}</p>
   <div class="progressbar" id="pbar" {% if progress.percent is none or job.state == 'done' %}hidden{% endif %}><span style="width:{{ progress.percent or 0 }}%"></span></div>

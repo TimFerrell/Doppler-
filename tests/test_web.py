@@ -142,3 +142,51 @@ def test_locate_refuses_recording_outside_flight_data(client, tmp_path):
                                      "center_lon": "-84.46", "radius_km": "200"})
     html = r.get_data(as_text=True)
     assert r.status_code == 400 and "2016-09-18" in html and "2026-10-21" in html
+
+
+def _locate_job(c, tmp_path):
+    """A locate job from uploads that fails fast (no flyover in silence)."""
+    import numpy as np
+    import soundfile as sf
+
+    from dopplergeo import sources
+
+    wav = io.BytesIO()
+    sf.write(wav, np.zeros(16000 * 20, np.float32), 16000, format="WAV")
+    pq = io.BytesIO()
+    sources.rows_to_frame([{"time": 1.7e9 + k, "icao24": "abc", "lat": 34.0, "lon": -84.4, "alt_msl_m": 900.0,
+                            "vx_east": 50.0, "vy_north": 0.0, "vz_up": 0.0, "type_code": "C172"}
+                           for k in range(30)]).to_parquet(pq)
+    r = c.post("/jobs/locate", data={"attest": "yes", "operator": "me", "center_lat": "34.0", "center_lon": "-84.4",
+                                     "radius_km": "7", "events": "", "truth_lat": "34.01", "truth_lon": "-84.41",
+                                     "audio": (io.BytesIO(wav.getvalue()), "clip.wav"),
+                                     "adsb": (io.BytesIO(pq.getvalue()), "flights.parquet")},
+               content_type="multipart/form-data")
+    assert r.status_code == 302, r.get_data(as_text=True)[:500]
+    return r.headers["Location"].rstrip("/").split("/")[-1]
+
+
+def test_retry_and_edit_rerun(client, tmp_path):
+    c, jobs_dir = client
+    jid = _locate_job(c, tmp_path)
+    assert _wait(c, jid)["state"] == "failed"
+    # retry: same files and settings, new job
+    r = c.post(f"/jobs/{jid}/retry")
+    assert r.status_code == 302
+    rid = r.headers["Location"].rstrip("/").split("/")[-1]
+    assert rid != jid and _wait(c, rid)["state"] == "failed"
+    rj = c.get(f"/jobs/{rid}").get_data(as_text=True)
+    assert "(retry 1)" in rj and "retry of" in rj
+    assert (jobs_dir / rid / "inputs" / "clip.wav").exists()
+    # edit & run again: form prefilled, files reused when nothing new is chosen
+    page = c.get(f"/?from={jid}").get_data(as_text=True)
+    assert 'value="34.0"' in page and 'name="reuse_job"' in page and "clip.wav" in page and 'value="7"' in page
+    r = c.post("/jobs/locate", data={"attest": "yes", "reuse_job": jid, "center_lat": "34.0", "center_lon": "-84.4",
+                                     "radius_km": "9"})
+    assert r.status_code == 302, r.get_data(as_text=True)[:500]
+    eid = r.headers["Location"].rstrip("/").split("/")[-1]
+    _wait(c, eid)
+    assert (jobs_dir / eid / "inputs" / "clip.wav").exists() and (jobs_dir / eid / "inputs" / "adsb").exists()
+    assert "radius_km=9" in " ".join(c.get(f"/jobs/{eid}/status.json").get_json()["log"].split())
+    assert c.post("/jobs/locate", data={"attest": "yes", "reuse_job": "nope", "center_lat": "1", "center_lon": "1",
+                                        "radius_km": "1"}).status_code == 400

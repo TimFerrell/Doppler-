@@ -279,3 +279,8 @@ ol.progress .detail { color: var(--muted); font-weight: 400; margin-left: 8px; f
 .tone { font: 600 .85rem var(--mono); color: var(--accent); }
 #recorder.monitoring #rec-time { color: var(--accent); }
 #rec-insecure a { word-break: break-all; }
+
+.jobactions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 10px; }
+.jobactions .primary { margin: 0; }
+a.button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.note.reuse { margin-bottom: 12px; }

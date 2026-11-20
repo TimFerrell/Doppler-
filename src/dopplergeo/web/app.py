@@ -288,9 +288,9 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             out.append(m)
         return out
 
-    def page(error=None, tab=None, status=200):
-        return render_template("index.html", jobs=jobs.list()[:50], cfg=cfg_preview, error=error,
-                               form=request.form if error else {}, tab=tab or request.form.get("tab") or
+    def page(error=None, tab=None, status=200, prefill=None, reuse=None):
+        return render_template("index.html", jobs=jobs.list()[:50], cfg=cfg_preview, error=error, reuse=reuse,
+                               form=prefill or (request.form if error else {}), tab=tab or request.form.get("tab") or
                                request.args.get("tab") or "locate", recordings=recordings(), datasets=datasets(),
                                collectors=collectors.statuses(), today=dt.date.today().isoformat(),
                                yesterday=(dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=2)).isoformat(),
@@ -307,7 +307,102 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     # ------------------------------------------------------------------ pages
     @app.get("/")
     def index():
+        src = request.args.get("from", "").strip()
+        if src:
+            try:
+                prefill, reuse = locate_prefill(src)
+                return page(tab="locate", prefill=prefill, reuse=reuse)
+            except (KeyError, StopIteration, ValueError, OSError):
+                return page("that job cannot be edited and rerun (it is not a locate job, or its files are gone)", "locate", 400)
         return page()
+
+    # ------------------------------------------------------------------ retry / edit & rerun
+    def locate_args(job_id: str) -> tuple[dict, Path, list, dict]:
+        """(job, dir, locate argv, raw config) of a past locate job."""
+        j, d = jobs.get(job_id), jobs.job_dir(job_id)
+        argv = next(s_["argv"] for s_ in j["steps"] if "locate" in s_["argv"])
+        cfg_raw = yaml.safe_load((d / "config.yaml").read_text()) or {}
+        return j, d, argv, cfg_raw
+
+    def _arg(argv, flag):
+        return argv[argv.index(flag) + 1] if flag in argv else None
+
+    def locate_prefill(job_id: str) -> tuple[dict, dict]:
+        from ..cli import parse_region
+
+        j, d, argv, cr = locate_args(job_id)
+        (lat, lon), radius_m = parse_region(_arg(argv, "--region"))
+        form = {"center_lat": f"{lat}", "center_lon": f"{lon}", "radius_km": f"{radius_m / 1000:g}"}
+        st = (cr.get("audio") or {}).get("start_utc")
+        if st not in (None, ""):
+            try:
+                form["start_utc"] = dt.datetime.fromtimestamp(float(st), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except (TypeError, ValueError):
+                form["start_utc"] = str(st)
+        el = cr.get("elevation") or {}
+        if el.get("dem_path"):
+            form["dem_path"] = el["dem_path"]
+        elif "constant_m" in el:
+            form["elevation_m"] = f"{el['constant_m']}"
+        if _arg(argv, "--events"):
+            form["events"] = _arg(argv, "--events").replace(",", ", ")
+        if _arg(argv, "--truth-latlon"):
+            form["truth_lat"], form["truth_lon"] = _arg(argv, "--truth-latlon").split(",")
+        g, sc = cr.get("grid") or {}, cr.get("score") or {}
+        if "refine_levels" in g:
+            form["refine_levels"] = f"{g['refine_levels']}"
+        if "dt_sweep_s" in sc:
+            form["dt_sweep_s"] = f"{sc['dt_sweep_s']:g}"
+        if sc.get("harmonics"):
+            form["harmonics"] = ",".join(str(h) for h in sc["harmonics"])
+        form["operator"] = ((cr.get("authorization") or {}).get("operator") or "")
+        audio = Path(_arg(argv, "--audio"))
+        adsb_p = Path(_arg(argv, "--adsb"))
+        reuse = {"job": job_id, "title": j["title"]}
+        if audio.parent == rec_dir:
+            form["recording"] = audio.name
+        else:
+            reuse["audio"] = audio.name
+        if adsb_p.resolve().is_relative_to(lib.root) and lib.exists(adsb_p.name):
+            form["dataset"] = adsb_p.name
+        else:
+            reuse["adsb"] = j["params"].get("adsb") or "uploaded flight data"
+        return form, reuse
+
+    def _link_tree(src: Path, dst: Path) -> None:
+        """Copy a job's inputs into a new job, hard-linking files (no extra disk) where possible."""
+        import os
+        import shutil
+
+        def cp(a, b):
+            try:
+                os.link(a, b)
+            except OSError:
+                shutil.copy2(a, b)
+
+        if src.exists():
+            # adsb.parquet is derived (rebuilt by the job's ingest step): never share it via a hard link
+            shutil.copytree(src, dst, copy_function=cp, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("adsb.parquet"))
+
+    @app.post("/jobs/<job_id>/retry")
+    def job_retry(job_id):
+        """Run a finished/failed job again, unchanged, on the current code."""
+        import shutil
+
+        j, d = get_job(job_id)
+        if j["state"] in ("queued", "running"):
+            return redirect(url_for("job_page", job_id=job_id))
+        title = re.sub(r"( \(retry( \d+)?\))+$", "", j["title"])
+        n = 1 + sum(1 for x in jobs.list() if x.get("params", {}).get("retry_root") == j["params"].get("retry_root", job_id))
+        new_id, nd = jobs.new_job(j["kind"], f"{title} (retry {n})",
+                                  {**j["params"], "retry_of": job_id, "retry_root": j["params"].get("retry_root", job_id)})
+        _link_tree(d / "inputs", nd / "inputs")
+        if (d / "config.yaml").exists():
+            shutil.copy2(d / "config.yaml", nd / "config.yaml")
+        steps = json.loads(json.dumps(j["steps"]).replace(str(d), str(nd)))
+        jobs.submit(new_id, steps)
+        return redirect(url_for("job_page", job_id=new_id))
 
     @app.post("/jobs/synth")
     def submit_synth():
@@ -366,7 +461,28 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             if harmonics is not None and (not harmonics or any(h < 1 or h > 8 for h in harmonics)):
                 raise FormError("harmonics must be integers 1-8, e.g. 1,2,3")
             ev = events_field()
-            audio, rmeta = audio_input(d)
+            reuse_id = request.form.get("reuse_job", "").strip()
+            reused = None
+            if reuse_id and not request.form.get("recording") and not (request.files.get("audio") and
+                                                                         request.files["audio"].filename):
+                try:
+                    _, rd, rargv, _ = locate_args(reuse_id)
+                except (KeyError, StopIteration, ValueError, OSError):
+                    raise FormError("the earlier job to reuse files from no longer exists") from None
+                _link_tree(rd / "inputs", d / "inputs")
+                ra = Path(_arg(rargv, "--audio"))
+                audio = d / ra.relative_to(rd) if ra.is_relative_to(rd) else ra
+                if not audio.exists():
+                    raise FormError("the earlier job's recording is gone; choose or upload a recording")
+                rmeta = {}
+                if audio.suffix.lower() in VIDEO_EXT | {".m4a"}:
+                    from ..audio import media_info
+
+                    info = media_info(audio)
+                    rmeta = {"start_utc": info["start_utc"], "time_source": info["time_source"]}
+                reused = (reuse_id, rd, rargv)
+            else:
+                audio, rmeta = audio_input(d)
             start = request.form.get("start_utc", "").strip() or rmeta.get("start_utc")
             if start:
                 from ..cli import parse_time
@@ -409,11 +525,19 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                             "'When it started (UTC)'.")
             else:
                 files = [f for f in request.files.getlist("adsb") if f and f.filename]
-                if not files:
+                src = d / "inputs" / "adsb"
+                if not files and reuse_id:
+                    if reused is None:  # a new recording was chosen but the flight data is reused
+                        _, rd0, _, _ = locate_args(reuse_id)
+                        _link_tree(rd0 / "inputs" / "adsb", src)
+                    if not src.exists() or not any(src.iterdir()):
+                        raise FormError("the earlier job's flight data is gone; choose flight data")
+                    saved = sorted(src.iterdir())
+                elif not files:
                     raise FormError("choose an ADS-B dataset from the library, or upload a unified .parquet or "
                                     "tar1090/readsb JSON logs (or a .zip of them)")
-                src = d / "inputs" / "adsb"
-                saved = save_adsb_uploads(files, src)
+                else:
+                    saved = save_adsb_uploads(files, src)
                 adsb_desc = ", ".join(p.name for p in saved)
                 parquets = sorted(src.glob("*.parquet"))
                 if parquets and len(parquets) == len(list(src.iterdir())):

@@ -41,6 +41,14 @@
 {# ------------------------------------------------------------------ LOCATE #}
 <form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data" id="locate-form">
   <input type="hidden" name="tab" value="locate">
+  {% if reuse %}
+  <input type="hidden" name="reuse_job" value="{{ reuse.job }}">
+  <div class="note reuse">Editing a rerun of <a href="{{ url_for('job_page', job_id=reuse.job) }}">{{ reuse.title }}</a>.
+    {% if reuse.audio %}Its recording <b>{{ reuse.audio }}</b>{% endif %}{% if reuse.audio and reuse.adsb %} and{% endif %}
+    {% if reuse.adsb %}its flight data <b>{{ reuse.adsb }}</b>{% endif %}
+    {% if reuse.audio or reuse.adsb %} will be reused unless you choose or upload something else below.{% endif %}
+    Settings are filled in from that job.</div>
+  {% endif %}
   <p class="intro">Pick a recording and flight data that cover the <b>same time</b>, mark the area to search, and run.
     The tool finds each plane passing in the audio, tries every 200 m spot in the area, and scores how well the
     real flight paths explain what you heard there.</p>
@@ -321,7 +329,9 @@
     <tbody>
     {% for j in jobs %}
       <tr><td><a href="{{ url_for('job_page', job_id=j.id) }}">{{ j.title }}</a></td>
-          <td><span class="state {{ j.state }}">{{ j.state }}</span></td>
+          <td><span class="state {{ j.state }}">{{ j.state }}</span>
+            {% if j.state == 'failed' %}<form method="post" action="{{ url_for('job_retry', job_id=j.id) }}" class="inline"><button class="link small" title="Run again with the same files and settings">↻ retry</button></form>{% endif %}
+            {% if j.kind == 'locate' and j.state in ('done', 'failed') %}<a class="small" href="{{ url_for('index', **{'from': j.id}) }}">edit</a>{% endif %}</td>
           <td>{{ j.created|ts }}</td><td>{{ j|dur }}</td></tr>
     {% endfor %}
     </tbody>
