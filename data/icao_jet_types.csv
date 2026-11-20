@@ -1,0 +1,183 @@
+type_code,family
+A318,Airbus narrowbody
+A319,Airbus narrowbody
+A320,Airbus narrowbody
+A321,Airbus narrowbody
+A19N,Airbus narrowbody
+A20N,Airbus narrowbody
+A21N,Airbus narrowbody
+BCS1,Airbus narrowbody
+BCS3,Airbus narrowbody
+A306,Airbus widebody
+A30B,Airbus widebody
+A310,Airbus widebody
+A332,Airbus widebody
+A333,Airbus widebody
+A337,Airbus widebody
+A338,Airbus widebody
+A339,Airbus widebody
+A342,Airbus widebody
+A343,Airbus widebody
+A345,Airbus widebody
+A346,Airbus widebody
+A359,Airbus widebody
+A35K,Airbus widebody
+A388,Airbus widebody
+B712,Boeing 717/727/737
+B721,Boeing 717/727/737
+B722,Boeing 717/727/737
+B731,Boeing 717/727/737
+B732,Boeing 717/727/737
+B733,Boeing 717/727/737
+B734,Boeing 717/727/737
+B735,Boeing 717/727/737
+B736,Boeing 717/727/737
+B737,Boeing 717/727/737
+B738,Boeing 717/727/737
+B739,Boeing 717/727/737
+B37M,Boeing 717/727/737
+B38M,Boeing 717/727/737
+B39M,Boeing 717/727/737
+B3XM,Boeing 717/727/737
+B741,Boeing 747/757/767
+B742,Boeing 747/757/767
+B743,Boeing 747/757/767
+B744,Boeing 747/757/767
+B748,Boeing 747/757/767
+B74R,Boeing 747/757/767
+B74S,Boeing 747/757/767
+B752,Boeing 747/757/767
+B753,Boeing 747/757/767
+B762,Boeing 747/757/767
+B763,Boeing 747/757/767
+B764,Boeing 747/757/767
+B772,Boeing 777/787
+B773,Boeing 777/787
+B77L,Boeing 777/787
+B77W,Boeing 777/787
+B778,Boeing 777/787
+B779,Boeing 777/787
+B788,Boeing 777/787
+B789,Boeing 777/787
+B78X,Boeing 777/787
+DC10,McDonnell Douglas
+DC85,McDonnell Douglas
+DC86,McDonnell Douglas
+DC87,McDonnell Douglas
+DC91,McDonnell Douglas
+DC93,McDonnell Douglas
+DC94,McDonnell Douglas
+DC95,McDonnell Douglas
+MD11,McDonnell Douglas
+MD81,McDonnell Douglas
+MD82,McDonnell Douglas
+MD83,McDonnell Douglas
+MD87,McDonnell Douglas
+MD88,McDonnell Douglas
+MD90,McDonnell Douglas
+E135,Embraer jets
+E145,Embraer jets
+E170,Embraer jets
+E175,Embraer jets
+E190,Embraer jets
+E195,Embraer jets
+E290,Embraer jets
+E295,Embraer jets
+E75L,Embraer jets
+E75S,Embraer jets
+E35L,Embraer jets
+E50P,Embraer jets
+E55P,Embraer jets
+E545,Embraer jets
+E550,Embraer jets
+CRJ1,Bombardier/Canadair
+CRJ2,Bombardier/Canadair
+CRJ7,Bombardier/Canadair
+CRJ9,Bombardier/Canadair
+CRJX,Bombardier/Canadair
+CL30,Bombardier/Canadair
+CL35,Bombardier/Canadair
+CL60,Bombardier/Canadair
+GL5T,Bombardier/Canadair
+GL6T,Bombardier/Canadair
+GL7T,Bombardier/Canadair
+GLEX,Bombardier/Canadair
+F70,Fokker/BAe/Avro
+F100,Fokker/BAe/Avro
+F28,Fokker/BAe/Avro
+B461,Fokker/BAe/Avro
+B462,Fokker/BAe/Avro
+B463,Fokker/BAe/Avro
+RJ70,Fokker/BAe/Avro
+RJ85,Fokker/BAe/Avro
+RJ1H,Fokker/BAe/Avro
+C500,Cessna Citation
+C501,Cessna Citation
+C510,Cessna Citation
+C525,Cessna Citation
+C25A,Cessna Citation
+C25B,Cessna Citation
+C25C,Cessna Citation
+C25M,Cessna Citation
+C550,Cessna Citation
+C551,Cessna Citation
+C55B,Cessna Citation
+C560,Cessna Citation
+C56X,Cessna Citation
+C650,Cessna Citation
+C680,Cessna Citation
+C68A,Cessna Citation
+C700,Cessna Citation
+C750,Cessna Citation
+G150,Gulfstream
+G280,Gulfstream
+GLF2,Gulfstream
+GLF3,Gulfstream
+GLF4,Gulfstream
+GLF5,Gulfstream
+GLF6,Gulfstream
+GA5C,Gulfstream
+GA6C,Gulfstream
+GALX,Gulfstream
+ASTR,Gulfstream
+LJ23,Learjet
+LJ24,Learjet
+LJ25,Learjet
+LJ28,Learjet
+LJ31,Learjet
+LJ35,Learjet
+LJ40,Learjet
+LJ45,Learjet
+LJ55,Learjet
+LJ60,Learjet
+LJ70,Learjet
+LJ75,Learjet
+FA10,Dassault Falcon
+FA20,Dassault Falcon
+FA50,Dassault Falcon
+FA5X,Dassault Falcon
+FA6X,Dassault Falcon
+FA7X,Dassault Falcon
+FA8X,Dassault Falcon
+F2TH,Dassault Falcon
+F900,Dassault Falcon
+H25A,Hawker/Beech/other bizjets
+H25B,Hawker/Beech/other bizjets
+H25C,Hawker/Beech/other bizjets
+BE40,Hawker/Beech/other bizjets
+PRM1,Hawker/Beech/other bizjets
+HDJT,Hawker/Beech/other bizjets
+SF50,Hawker/Beech/other bizjets
+PC24,Hawker/Beech/other bizjets
+EA50,Hawker/Beech/other bizjets
+WW24,Hawker/Beech/other bizjets
+SU95,Other airliners
+YK42,Other airliners
+T154,Other airliners
+T204,Other airliners
+A148,Other airliners
+C919,Other airliners
+ARJ21,Other airliners
+B703,Other airliners
+B720,Other airliners
+CONC,Other airliners

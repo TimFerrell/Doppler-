@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dopplergeo"
+version = "0.1.0"
+description = "Acoustic aircraft Doppler geolocation of operator-owned recordings against ADS-B tracks"
+requires-python = ">=3.12"
+
+[project.scripts]
+dopplergeo = "dopplergeo.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

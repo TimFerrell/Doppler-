@@ -1,0 +1,13 @@
+numpy
+scipy
+pandas
+pyarrow
+polars
+rasterio
+pyproj
+shapely
+matplotlib
+librosa
+soundfile
+pytest
+pyyaml

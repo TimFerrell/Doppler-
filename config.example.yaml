@@ -1,0 +1,118 @@
+# dopplergeo configuration. Every key is optional; omitted keys take these defaults.
+
+
+# Only recordings owned by, or explicitly authorized to, the operator may be analysed.
+# measure/locate refuse to run unless this is true (or --attest-authorized is passed).
+authorization:
+  attest_owned_or_authorized: false
+  operator: null
+
+# c = speed_of_sound unless temperature_c is set: c = 331.3*sqrt(1 + T/273.15)
+physics:
+  speed_of_sound: 343.0
+  temperature_c: null
+  retarded_tol_s: 0.0001
+  retarded_max_iter: 20
+
+# ADS-B resampled to a uniform grid by linear time interpolation in ECEF; gaps > max_gap_s split segments
+track:
+  resample_dt_s: 1.0
+  max_gap_s: 30.0
+
+# observer z = DEM elevation (single GeoTIFF mosaic, MSL m); constant_m when dem_path is null
+elevation:
+  dem_path: null
+  constant_m: 0.0
+  dem_band: 1
+
+# start_utc: ISO-8601 with Z, or unix seconds, of the first sample. Optional for Phase A
+# (used only to pre-select candidate flights); internal times are unix seconds UTC.
+audio:
+  target_sr: 16000
+  start_utc: null
+
+# Hamming STFT, hop = window/hop_divisor; pad_factor zero-pads the FFT (frequency interpolation)
+spectrogram:
+  window: 16384
+  hop_divisor: 8
+  pad_factor: 4
+  fmin_hz: 5.0
+  fmax_hz: 800.0
+
+# Stage-0 straight-line (retarded) fit of the per-column ridge maximum
+measure:
+  band_hz: [80.0, 300.0]
+  min_column_snr_db: 6.0
+  fit_window_s: 90.0
+  loss: soft_l1
+  f_scale_hz: 1.0
+  v_bounds_mps: [20.0, 250.0]
+  d_bounds_m: [100.0, 30000.0]
+  max_rms_hz: 2.0
+
+# flyover detector: sliding-window S-curve fits; manual_times_s overrides it
+detect:
+  band_hz: [60.0, 300.0]
+  window_s: 60.0
+  step_s: 10.0
+  min_coverage: 0.5
+  min_spread_hz: 4.0
+  max_rms_hz: 1.5
+  min_inlier_frac: 0.6
+  merge_s: 20.0
+  manual_times_s: null
+
+# event 1 sweeps dt +-dt_sweep_s and f0 +-df_sweep_hz; events i>1 are time-locked (df only)
+score:
+  dt_sweep_s: 3.0
+  dt_step_s: 0.1
+  df_sweep_hz: 1.5
+  df_step_hz: 0.1
+  coarse_dt_step_s: 0.5
+  coarse_df_step_hz: 0.5
+  harmonics: [1]
+  brightness: snr
+  brightness_clip: null
+  curve_step_s: 0.1
+  freq_interp: quadratic
+  polish_divisions: 5
+  batch_size: 48
+  workers: 0
+
+# candidate lattice; refine_top_n survivors get half-step neighbourhoods refine_levels times
+grid:
+  step_m: 200.0
+  audible_radius_m: 10000.0
+  refine_top_n: 50
+  refine_levels: 1
+
+# drop KNOWN jets only (unknown/null type codes are kept); on_missing_velocity: error | drop
+adsb:
+  jet_types_csv: data/icao_jet_types.csv
+  drop_jets: true
+  flight_gap_s: 1800.0
+  max_seen_pos_s: 15.0
+  on_missing_velocity: error
+  prefer_geometric_alt: true
+
+# time_reference: measured_cpa (locked multi-event scoring) | absolute (needs audio.start_utc)
+locate:
+  time_reference: measured_cpa
+  time_tolerance_s: 300.0
+  top_k: 10
+
+# Phase 0 synthetic fixture parameters
+synth:
+  duration_s: 120.0
+  sr: 16000
+  f0_hz: 140.0
+  harmonic_amps: [1.0, 0.5, 0.25]
+  snr_db: -22.0
+  spherical_spreading: true
+  search_radius_m: 6000.0
+  center_offset_max_m: 2000.0
+
+# local (Phase A) | area (Phase B: not built until Phase A passes on a real recording)
+search_mode: local
+paths:
+  out_dir: data/out
