@@ -192,8 +192,6 @@ def cmd_locate_area(args, cfg) -> int:
 
 
 def cmd_fetch_adsblol(args, cfg) -> int:
-    import json as _json
-
     from . import sources
 
     bbox = None
@@ -226,12 +224,14 @@ def cmd_fetch_adsblol(args, cfg) -> int:
                                           gap_s=float(cfg["adsb"]["flight_gap_s"]), skip_types=skip)
         total += stats["rows_out"]
         print(yaml.safe_dump({"out": str(out), **stats}, sort_keys=False))
-        meta = out / "meta.json"
-        if meta.exists():  # a library dataset: record the day and refresh its summary
-            m = _json.loads(meta.read_text())
-            m["days"] = sorted(set(m.get("days", [])) | {day.isoformat()})
-            meta.write_text(_json.dumps(m, indent=1))
-            sources.Library(out.parent).refresh(out.name)
+        if (out / "meta.json").exists():  # a library dataset: record the day and refresh its summary
+            lib = sources.Library(out.parent)
+            iso = day.isoformat()
+            lib.update_meta(out.name, fn=lambda m: m.__setitem__("days", sorted(set(m.get("days", [])) | {iso})))
+            try:
+                lib.refresh(out.name)
+            except Exception as e:  # noqa: BLE001 - the data is written; a summary refresh must not fail the day
+                log.warning("dataset summary refresh failed (data for %s is complete): %s", iso, e)
         day += dt.timedelta(days=1)
     return 0 if total else 1
 

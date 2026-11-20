@@ -64,13 +64,24 @@ class Library:
     def meta(self, name: str) -> dict:
         return json.loads((self.path(name) / "meta.json").read_text())
 
-    def update_meta(self, name: str, **kw) -> dict:
+    def update_meta(self, name: str, fn=None, **kw) -> dict:
+        """Locked read-modify-write of meta.json (safe with several fetch workers on one dataset).
+
+        ``fn(meta)`` may mutate the dict in place under the lock (e.g. add a day to ``days``).
+        """
+        import fcntl
+        import os
+
         p = self.path(name) / "meta.json"
-        m = json.loads(p.read_text())
-        m.update(kw)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(m, indent=1))
-        tmp.replace(p)
+        with open(p.with_suffix(".lock"), "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            m = json.loads(p.read_text())
+            if fn is not None:
+                fn(m)
+            m.update(kw)
+            tmp = p.with_name(f"meta.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(m, indent=1))
+            tmp.replace(p)
         return m
 
     def append(self, name: str, df: pd.DataFrame) -> dict:
@@ -87,12 +98,23 @@ class Library:
 
         d = self.path(name)
         parts = sorted(d.rglob("*.parquet"))
+        day_dirs = sorted(p.name[4:] for p in d.glob("day=*") if any(p.glob("tile_*.parquet")))
+        if day_dirs:  # the days actually on disk are the truth (heals lost concurrent updates)
+            self.update_meta(name, fn=lambda m: m.__setitem__("days", sorted(set(m.get("days", [])) | set(day_dirs))))
         if not parts:
             return self.update_meta(name, rows=0, flights=0, t_min=None, t_max=None, bbox=None, parts=0)
         size = sum(p.stat().st_size for p in parts)
         if size < 200e6:
             cols = ["time", "icao24", "lat", "lon"]
-            t = pd.concat([pq.read_table(p, columns=cols).to_pandas() for p in parts], ignore_index=True)
+            tabs = []
+            for p in parts:
+                try:
+                    tabs.append(pq.read_table(p, columns=cols).to_pandas())
+                except Exception:  # noqa: BLE001 - a file being written or replaced right now
+                    continue
+            if not tabs:
+                return self.meta(name)
+            t = pd.concat(tabs, ignore_index=True)
             return self.update_meta(
                 name, rows=int(len(t)), flights=int(t["icao24"].nunique()), t_min=float(t["time"].min()),
                 t_max=float(t["time"].max()),
@@ -100,7 +122,10 @@ class Library:
                 parts=len(parts), size_bytes=size)
         rows, mins, maxs = 0, {}, {}
         for p in parts:
-            md = pq.ParquetFile(p).metadata
+            try:
+                md = pq.ParquetFile(p).metadata
+            except Exception:  # noqa: BLE001 - a file being written or replaced right now
+                continue
             rows += md.num_rows
             names = [md.schema.column(i).name for i in range(md.num_columns)]
             for rg in range(md.num_row_groups):
@@ -325,14 +350,20 @@ class _TileWriter:
             key = (int(la), int(lo))
             w = self.writers.get(key)
             if w is None:
-                w = self.pq.ParquetWriter(self.dir / tile_name(*key), self.schema, compression="zstd")
+                # written under a temporary name and renamed on close, so readers never see a tile
+                # without its footer (concurrent fetch workers refresh the dataset summary)
+                w = self.pq.ParquetWriter(self.dir / (tile_name(*key) + ".partial"), self.schema,
+                                          compression="zstd")
                 self.writers[key] = w
             t = pa.Table.from_pandas(g.drop(columns=["_la", "_lo"]), schema=self.schema, preserve_index=False)
             w.write_table(t)
 
     def close(self) -> int:
-        for w in self.writers.values():
+        import os
+
+        for key, w in self.writers.items():
             w.close()
+            os.replace(self.dir / (tile_name(*key) + ".partial"), self.dir / tile_name(*key))
         return len(self.writers)
 
 

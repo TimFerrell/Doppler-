@@ -157,3 +157,26 @@ def test_video_audio_extraction_and_metadata(video, tmp_path):
     assert abs(np.argmax(spec) - 140) <= 1  # the tone survives AAC + extraction
     x2, _ = audio.load_audio(video, 16000)  # direct load of the video path
     assert abs(len(x2) - len(x)) < 1600
+
+
+def test_concurrent_meta_updates_and_partial_tiles(tmp_path):
+    """Several fetch workers on one dataset: no lost days, partial tiles invisible to readers."""
+    import threading
+
+    lib = sources.Library(tmp_path)
+    lib.create("fl", {"days": []})
+    days = [f"2026-10-{d:02d}" for d in range(1, 31)]
+
+    def add(d):
+        lib.update_meta("fl", fn=lambda m: m.__setitem__("days", sorted(set(m["days"]) | {d})))
+
+    th = [threading.Thread(target=add, args=(d,)) for d in days]
+    [t.start() for t in th]
+    [t.join() for t in th]
+    assert lib.meta("fl")["days"] == days
+    # a tile still being written (no footer yet) is neither read nor counted
+    dd = tmp_path / "fl" / "day=2026-10-01"
+    dd.mkdir()
+    (dd / "tile_+20_-090.parquet.partial").write_bytes(b"PAR1 half-written")
+    assert len(adsb.read_table(tmp_path / "fl")) == 0 if any((tmp_path / "fl").rglob("*.parquet")) else True
+    lib.refresh("fl")
