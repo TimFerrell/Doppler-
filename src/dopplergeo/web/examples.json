@@ -1,0 +1,68 @@
+{
+  "about": "Openly licensed aircraft recordings on Freesound, for testing. Facts are only what each author published on the sound's page (checked 2026-11-20). Attribution is required for CC BY works.",
+  "examples": [
+    {
+      "id": 820325, "title": "Small plane flyover 2", "author": "SoundsLikeYukon", "license": "CC0 1.0",
+      "page": "https://freesound.org/people/SoundsLikeYukon/sounds/820325/", "duration_s": 90.0,
+      "place": "Riverdale, Whitehorse, Yukon, Canada", "lat": null, "lon": null,
+      "recorded": "an August evening at around 10 p.m. (uploaded 2025-08-19); exact date not published",
+      "start_utc": null, "aircraft": "small plane, most likely a Cessna",
+      "tests": "Detection on a real prop flyover. Location test only if the exact date is known; Yukon is outside the continental-US dataset (needs world data)."
+    },
+    {
+      "id": 838870, "title": "Airplane-fly-over-1", "author": "charlieshread", "license": "CC0 1.0",
+      "page": "https://freesound.org/people/charlieshread/sounds/838870/", "duration_s": 53.0,
+      "place": "a residential home near an airport (place not published)", "lat": null, "lon": null,
+      "recorded": "uploaded 2025-12-19; recording date not published", "start_utc": null, "aircraft": "airplane",
+      "tests": "Detection only (no location or time published)."
+    },
+    {
+      "id": 847112, "title": "Aircraft Flyover (Likely Helicopter) with Rural Ambience", "author": "TSP-Talk",
+      "license": "CC0 1.0", "page": "https://freesound.org/people/TSP-Talk/sounds/847112/", "duration_s": 227.3,
+      "place": "Altenthann, Regensburg district, Bavaria, Germany", "lat": null, "lon": null,
+      "recorded": "uploaded 2026-03-03; recording time not published", "start_utc": null,
+      "aircraft": "low aircraft, most likely a helicopter",
+      "tests": "Detection on a long rural recording. Helicopters have rotor tones that differ from propeller planes. No location test (time not published, Germany needs world data)."
+    },
+    {
+      "id": 847113, "title": "Heavy Aircraft Pass-By", "author": "TSP-Talk", "license": "CC0 1.0",
+      "page": "https://freesound.org/people/TSP-Talk/sounds/847113/", "duration_s": 144.7,
+      "place": "Altenthann, Regensburg district, Bavaria, Germany", "lat": null, "lon": null,
+      "recorded": "uploaded 2026-03-03; recording time not published", "start_utc": null,
+      "aircraft": "large military or transport aircraft",
+      "tests": "Detection of a large (likely turboprop or jet) aircraft. No location test (time not published)."
+    },
+    {
+      "id": 806057, "title": "F22 Fighter Jet Flyover", "author": "marcushagued", "license": "CC BY 4.0",
+      "attribution": "\"F22 Fighter Jet Flyover\" by marcushagued (freesound.org), CC BY 4.0",
+      "page": "https://freesound.org/people/marcushagued/sounds/806057/", "duration_s": 39.0,
+      "place": "\"the air force academy\" (as published)", "lat": null, "lon": null,
+      "recorded": "uploaded 2025-05-12; recording date not published", "start_utc": null, "aircraft": "F-22 (jet)",
+      "tests": "Jet-band detection on a loud, fast military jet. Military jets often do not broadcast public ADS-B, so no location test."
+    },
+    {
+      "id": 859832, "title": "DoKomi Airplane 04", "author": "TruliVerse", "license": "CC BY 4.0",
+      "attribution": "Sound by TruliVerse (truliverse.studio), CC BY 4.0",
+      "page": "https://freesound.org/people/TruliVerse/sounds/859832/", "duration_s": 29.9,
+      "place": "near the DoKomi 2026 convention grounds, Düsseldorf, Germany", "lat": null, "lon": null,
+      "recorded": "uploaded 2026-06-22; recording time not published", "start_utc": null, "aircraft": "airplane",
+      "tests": "Detection near a busy airport (Düsseldorf). Short clip: the closest moment must be inside it."
+    },
+    {
+      "id": 251971, "title": "Propeller Plane", "author": "clif_creates", "license": "CC0 1.0",
+      "page": "https://freesound.org/s/251971/", "duration_s": 30.4,
+      "place": "on the grass behind the LAX landing strip, Los Angeles, California", "lat": null, "lon": null,
+      "recorded": "uploaded 2014-10-20; recording date not published", "start_utc": null, "aircraft": "propeller plane overhead",
+      "tests": "Detection of a close prop pass. No location test: it predates the adsb.lol archive (2023 onward)."
+    },
+    {
+      "id": 786352, "title": "park village Dorst NL 0331 PM 170328_1114", "author": "klankbeeld", "license": "CC BY 4.0",
+      "attribution": "\"park village Dorst NL\" by klankbeeld (freesound.org), CC BY 4.0. The author asks for credit and does not allow use in royalty-free stock collections.",
+      "page": "https://freesound.org/people/klankbeeld/sounds/786352/", "duration_s": 132.6,
+      "place": "park/forest near Dorst, North Brabant, Netherlands", "lat": 51.60025, "lon": 4.86002,
+      "recorded": "published: March 28th 2017, start 3:31 PM (local time)", "start_utc": null,
+      "aircraft": "propeller plane stunting",
+      "tests": "Detection with birdsong and wind (a hard real-world case). Published place and time, but 2017 predates the adsb.lol archive, so no location test."
+    }
+  ]
+}

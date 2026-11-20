@@ -121,6 +121,9 @@ synth:
   search_radius_m: 6000.0
   center_offset_max_m: 2000.0
 
+examples:
+  freesound_api_key: null
+
 # local (Phase A) | area (Phase B: not built until Phase A passes on a real recording)
 search_mode: local
 paths:

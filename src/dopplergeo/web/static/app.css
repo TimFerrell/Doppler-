@@ -302,3 +302,6 @@ details.onego { margin-top: 18px; border-top: 1px solid var(--line); padding-top
 details.onego > summary { font-weight: 600; color: var(--muted); }
 details.onego > form { margin-top: 12px; }
 .step2card { border-color: var(--ok); }
+
+details.examples { margin: 16px 0; } details.examples > summary { cursor: pointer; }
+h2.inl { display: inline; } .examples-t { display: block; overflow-x: auto; }

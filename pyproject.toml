@@ -15,7 +15,7 @@ dopplergeo = "dopplergeo.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dopplergeo = ["web/templates/*.html", "web/static/*", "web/static/vendor/*", "web/static/vendor/leaflet/*",
+dopplergeo = ["web/*.json", "web/templates/*.html", "web/static/*", "web/static/vendor/*", "web/static/vendor/leaflet/*",
               "web/static/vendor/leaflet/images/*"]
 
 [tool.pytest.ini_options]

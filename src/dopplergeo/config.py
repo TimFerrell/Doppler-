@@ -123,6 +123,11 @@ DEFAULTS: dict[str, Any] = {
         "search_radius_m": 6000.0,
         "center_offset_max_m": 2000.0,
     },
+    "examples": {
+        # Your own free Freesound API key (freesound.org/apiv2/apply), used only for the 'Fetch' buttons of the
+        # example recordings. Or set the environment variable DOPPLERGEO_FREESOUND_KEY. Never commit it.
+        "freesound_api_key": None,
+    },
     "search_mode": "local",  # local | area (Phase B, feature-flagged)
     "paths": {
         "out_dir": "data/out",

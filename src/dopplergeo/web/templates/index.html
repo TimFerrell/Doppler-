@@ -207,13 +207,35 @@
     <label class="check"><input type="checkbox" name="time_is_end" value="yes"><span>The metadata time marks the <em>end</em> of the recording (subtract its length)</span></label>
     <button class="primary" type="submit">Import</button>
   </form>
+  <details class="examples" {% if not recordings %}open{% endif %}>
+    <summary><h2 class="inl">Example recordings to test with</h2> <small class="muted">openly licensed, from Freesound</small></summary>
+    <p class="hint">Real aircraft recordings their authors published under open licenses. Only the facts each author published are
+      shown. Most do not publish an exact recording time, so they test whether the tool <b>hears</b> the aircraft (Analyse); a
+      location test also needs the time and flight data for that day. {% if freesound_key %}<b>Fetch</b> downloads the preview through
+      the Freesound API.{% else %}To get one: open it on Freesound, download it (free account), then use <b>Import a video or audio
+      file</b> above. With a Freesound API key in the config, a Fetch button does this for you.{% endif %}</p>
+    <table class="examples-t">
+      <thead><tr><th>Recording</th><th>Published place / time</th><th>What it can test</th><th></th></tr></thead>
+      <tbody>{% for e in examples %}
+        <tr><td><a href="{{ e.page }}" target="_blank" rel="noreferrer">{{ e.title }}</a><br>
+            <small class="muted">by {{ e.author }} · {{ e.license }} · {{ e.duration_s|secs }} · {{ e.aircraft }}</small></td>
+          <td class="small">{{ e.place }}<br><span class="muted">{{ e.recorded }}</span></td>
+          <td class="small">{{ e.tests }}</td>
+          <td class="actions">{% if freesound_key %}<form method="post" action="{{ url_for('fetch_example', sid=e.id) }}"><button class="link">Fetch</button></form>
+            {% else %}<a href="{{ e.page }}" target="_blank" rel="noreferrer">Open on Freesound</a>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+    <p class="hint small">Credit for CC BY works is shown with each one and kept with the recording when fetched.</p>
+  </details>
   <h2>Your recordings</h2>
   {% if recordings %}
   <table class="recs">
     <thead><tr><th>Recording</th><th>Start (UTC)</th><th>Length</th><th></th></tr></thead>
     <tbody>{% for r in recordings %}
       <tr><td><span class="mono small">{{ r.name }}</span><br><audio controls preload="none" src="{{ url_for('get_recording', name=r.name) }}"></audio></td>
-        <td>{{ r.start_utc|ts if r.start_utc else '—' }}{% if r.time_source %}<br><span class="small muted">{{ r.time_source }}</span>{% endif %}</td><td>{{ r.duration_s|secs if r.duration_s else '—' }}</td>
+        <td>{{ r.start_utc|ts if r.start_utc else '—' }}{% if r.time_source %}<br><span class="small muted">{{ r.time_source }}</span>{% endif %}
+          {% if r.attribution %}<br><span class="small muted">{{ r.attribution }}</span>{% endif %}
+          {% if r.published_place %}<br><span class="small muted">published place: {{ r.published_place }}</span>{% endif %}</td><td>{{ r.duration_s|secs if r.duration_s else '—' }}</td>
         <td class="actions"><button type="button" class="link spec-rec" data-name="{{ r.name }}">Spectrogram</button>
           <button type="button" class="link use-rec" data-name="{{ r.name }}">Use in Locate</button>
           <a href="{{ url_for('get_recording', name=r.name) }}?download">Download</a>

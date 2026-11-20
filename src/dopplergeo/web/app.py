@@ -350,6 +350,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                                request.args.get("tab") or "locate", recordings=recordings(), datasets=datasets(),
                                collectors=collectors.statuses(), today=dt.date.today().isoformat(),
                                yesterday=(dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=2)).isoformat(),
+                               examples=examples()["examples"], freesound_key=bool(freesound_key()),
                                sched={"alive": sched.is_alive(), "last_check": sched.last_check,
                                       "last_error": sched.last_error}), status
 
@@ -773,6 +774,62 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 "clock": "browser Date.now() at the first captured sample"}
         p.with_suffix(".json").write_text(json.dumps(meta, indent=1))
         return jsonify({"name": name, **meta})
+
+    # ------------------------------------------------------------------ example recordings (openly licensed)
+    def examples() -> dict:
+        return json.loads((Path(__file__).with_name("examples.json")).read_text())
+
+    def freesound_key() -> str | None:
+        import os
+
+        return os.environ.get("DOPPLERGEO_FREESOUND_KEY") or (cfg_preview.get("examples") or {}).get("freesound_api_key")
+
+    @app.post("/recordings/examples/<int:sid>/fetch")
+    def fetch_example(sid):
+        """Download an example's preview through the official Freesound API (needs the user's own API key)."""
+        import urllib.request
+
+        ex = next((e for e in examples()["examples"] if e["id"] == sid), None)
+        if ex is None:
+            abort(404)
+        key = freesound_key()
+        if not key:
+            return page("Fetching needs your own free Freesound API key (freesound.org/apiv2/apply), set as "
+                        "examples.freesound_api_key in the config or DOPPLERGEO_FREESOUND_KEY. Or open the sound on "
+                        "Freesound, download it in your browser and use 'Import a video or audio file'.", "record", 400)
+        hdr = {"Authorization": f"Token {key}", "User-Agent": "dopplergeo (Freesound API client)"}
+        try:
+            req = urllib.request.Request(f"https://freesound.org/apiv2/sounds/{sid}/?fields=id,name,username,license,previews",
+                                         headers=hdr)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                info = json.loads(r.read())
+            url = (info.get("previews") or {}).get("preview-hq-mp3")
+            if not url:
+                raise RuntimeError("the API returned no preview for this sound")
+            tmp = rec_dir / ".incoming" / f"freesound-{sid}.mp3"
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=120) as r, open(tmp, "wb") as fh:
+                fh.write(r.read())
+        except Exception as e:  # noqa: BLE001
+            return page(f"Freesound fetch failed: {e}", "record", 400)
+        from ..audio import extract_audio
+
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", ex["title"]).strip("-")[:40]
+        out = rec_dir / f"example-{sid}-{slug}.wav"
+        try:
+            extract_audio(tmp, out, int(cfg_preview["audio"]["target_sr"]))
+        finally:
+            tmp.unlink(missing_ok=True)
+        import soundfile as sf
+
+        meta = {"start_utc": ex.get("start_utc"), "time_source": ("published by the author" if ex.get("start_utc") else None),
+                "duration_s": sf.info(str(out)).duration, "sr": sf.info(str(out)).samplerate,
+                "source": f"Freesound example: {ex['page']}", "license": info.get("license") or ex["license"],
+                "attribution": ex.get("attribution") or f"\"{ex['title']}\" by {ex['author']} (freesound.org), {ex['license']}",
+                "published_place": ex["place"], "published_lat": ex.get("lat"), "published_lon": ex.get("lon"),
+                "published_recorded": ex["recorded"], "tests": ex["tests"], "label": ex["title"]}
+        out.with_suffix(".json").write_text(json.dumps(meta, indent=1))
+        return redirect(url_for("index", tab="record"))
 
     @app.post("/recordings/import")
     def import_recording():

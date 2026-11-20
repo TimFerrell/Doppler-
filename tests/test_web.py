@@ -275,3 +275,50 @@ def test_analyse_first_then_locate_step(client, tmp_path):
     assert _wait(c, jid2)["state"] == "done"
     page2 = c.get(f"/jobs/{jid2}").get_data(as_text=True)
     assert "No aircraft found" in page2 and "Step 2" not in page2
+
+
+def test_example_recordings_listed_and_fetched_via_api(client, tmp_path, monkeypatch):
+    import json
+    import urllib.request
+
+    import numpy as np
+    import soundfile as sf
+
+    c, _ = client
+    monkeypatch.delenv("DOPPLERGEO_FREESOUND_KEY", raising=False)
+    html = c.get("/?tab=record").get_data(as_text=True)
+    assert "Example recordings to test with" in html and "Open on Freesound" in html
+    # no key: a clear message, nothing downloaded
+    r = c.post("/recordings/examples/820325/fetch")
+    assert r.status_code == 400 and "API key" in r.get_data(as_text=True)
+    assert c.post("/recordings/examples/1/fetch").status_code == 404
+
+    wav = io.BytesIO()
+    sf.write(wav, (0.1 * np.sin(np.arange(16000) * 0.1)).astype("float32"), 16000, format="WAV")
+    seen = []
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.append((req.full_url, dict(req.header_items())))
+        if "/apiv2/sounds/806057/" in req.full_url:
+            return Resp(json.dumps({"license": "http://creativecommons.org/licenses/by/4.0/",
+                                    "previews": {"preview-hq-mp3": "https://cdn.example/p.mp3"}}).encode())
+        return Resp(wav.getvalue())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("DOPPLERGEO_FREESOUND_KEY", "test-key")
+    assert "Fetch</button>" in c.get("/?tab=record").get_data(as_text=True)
+    r = c.post("/recordings/examples/806057/fetch")
+    assert r.status_code == 302, r.get_data(as_text=True)
+    assert all(h.get("Authorization") == "Token test-key" and "Mozilla" not in h.get("User-agent", "") for _, h in seen)
+    out = list((tmp_path / "rec").glob("example-806057-*.wav"))
+    assert len(out) == 1
+    meta = json.loads(out[0].with_suffix(".json").read_text())
+    assert meta["start_utc"] is None and "marcushagued" in meta["attribution"]
+    assert "marcushagued" in c.get("/?tab=record").get_data(as_text=True)
