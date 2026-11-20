@@ -113,8 +113,7 @@ def test_rehydrate_form_validation(client):
     base = {"south": "24.2", "west": "-87.8", "north": "31.2", "east": "-79.8", "region_label": "Florida"}
     r = c.post("/data/rehydrate", data={**base, "date": today})
     assert r.status_code == 400 and "past UTC days" in r.get_data(as_text=True)
-    r = c.post("/data/rehydrate", data={**base, "date": "2026-01-01", "south": "0", "north": "60", "west": "-130",
-                                        "east": "-60"})
-    assert r.status_code == 400 and "400 square degrees" in r.get_data(as_text=True)
+    r = c.post("/data/rehydrate", data={**base, "date": "2026-01-01", "south": "31", "north": "24"})
+    assert r.status_code == 400 and "south &lt; north" in r.get_data(as_text=True)
     r = c.post("/data/rehydrate", data={**base, "date": "2026-01-05", "end_date": "2026-01-01"})
     assert r.status_code == 400

@@ -82,19 +82,44 @@ class Library:
         return self.refresh(name)
 
     def refresh(self, name: str) -> dict:
-        d = self.path(name)
-        parts = sorted(d.glob("*.parquet"))
-        if not parts:
-            return self.update_meta(name, rows=0, flights=0, t_min=None, t_max=None, bbox=None)
+        """Recompute the summary. Small datasets are read; large ones use parquet metadata only."""
         import pyarrow.parquet as pq
 
-        cols = ["time", "icao24", "lat", "lon"]
-        t = pd.concat([pq.read_table(p, columns=cols).to_pandas() for p in parts], ignore_index=True)
-        return self.update_meta(
-            name, rows=int(len(t)), flights=int(t["icao24"].nunique()), t_min=float(t["time"].min()),
-            t_max=float(t["time"].max()),
-            bbox=[float(t["lat"].min()), float(t["lon"].min()), float(t["lat"].max()), float(t["lon"].max())],
-            parts=len(parts))
+        d = self.path(name)
+        parts = sorted(d.rglob("*.parquet"))
+        if not parts:
+            return self.update_meta(name, rows=0, flights=0, t_min=None, t_max=None, bbox=None, parts=0)
+        size = sum(p.stat().st_size for p in parts)
+        if size < 200e6:
+            cols = ["time", "icao24", "lat", "lon"]
+            t = pd.concat([pq.read_table(p, columns=cols).to_pandas() for p in parts], ignore_index=True)
+            return self.update_meta(
+                name, rows=int(len(t)), flights=int(t["icao24"].nunique()), t_min=float(t["time"].min()),
+                t_max=float(t["time"].max()),
+                bbox=[float(t["lat"].min()), float(t["lon"].min()), float(t["lat"].max()), float(t["lon"].max())],
+                parts=len(parts), size_bytes=size)
+        rows, mins, maxs = 0, {}, {}
+        for p in parts:
+            md = pq.ParquetFile(p).metadata
+            rows += md.num_rows
+            names = [md.schema.column(i).name for i in range(md.num_columns)]
+            for rg in range(md.num_row_groups):
+                for c in ("time", "lat", "lon"):
+                    st = md.row_group(rg).column(names.index(c)).statistics
+                    if st is not None and st.has_min_max:
+                        mins[c] = min(mins.get(c, st.min), st.min)
+                        maxs[c] = max(maxs.get(c, st.max), st.max)
+        flights = 0
+        for dj in d.glob("day=*/_day.json"):
+            try:
+                flights += int(json.loads(dj.read_text()).get("aircraft_kept", 0))
+            except (OSError, ValueError):
+                pass
+        return self.update_meta(name, rows=int(rows), flights=int(flights), flights_note="summed per day",
+                                t_min=float(mins.get("time", 0)), t_max=float(maxs.get("time", 0)),
+                                bbox=[float(mins.get("lat", 0)), float(mins.get("lon", 0)),
+                                      float(maxs.get("lat", 0)), float(maxs.get("lon", 0))],
+                                parts=len(parts), size_bytes=size)
 
     def list(self) -> list[dict]:
         out = []
@@ -247,13 +272,78 @@ def _trace_may_touch(obj: dict, bbox, pad: float = 1.0, stride: int = 10) -> boo
     return False
 
 
-def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float], out_dir: str | Path,
-                      variants=("prod-0", "staging-0"), t_range=None, progress=None, gap_s=1800.0,
-                      chunk_rows: int = 400_000) -> dict:
-    """Stream one day of the adsb.lol archive into ``out_dir`` (part files), keeping only points in bbox.
+TILE_DEG = 10
 
-    Memory stays bounded for state-sized boxes: rows are written every ``chunk_rows``. Flight ids are
-    re-derived across part files when the dataset is read (``adsb.read_table`` on the directory).
+
+def tile_key(lat: float, lon: float) -> tuple[int, int]:
+    return int(np.floor(lat / TILE_DEG) * TILE_DEG), int(np.floor(lon / TILE_DEG) * TILE_DEG)
+
+
+def tile_name(lat0: int, lon0: int) -> str:
+    return f"tile_{lat0:+03d}_{lon0:+04d}.parquet"
+
+
+def parse_tile_name(name: str) -> tuple[int, int] | None:
+    m = re.match(r"^tile_([+-]\d+)_([+-]\d+)\.parquet$", name)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _arrow_schema():
+    import pyarrow as pa
+
+    return pa.schema([("time", pa.float64()), ("icao24", pa.string()), ("flight_id", pa.int64()),
+                      ("lat", pa.float64()), ("lon", pa.float64()), ("alt_msl_m", pa.float32()),
+                      ("vx_east", pa.float32()), ("vy_north", pa.float32()), ("vz_up", pa.float32()),
+                      ("type_code", pa.string())])
+
+
+class _TileWriter:
+    """Appends rows to one parquet file per 10°x10° tile under ``<out>/day=<YYYY-MM-DD>/``.
+
+    Region + date queries then open only the overlapping files (``adsb.read_table`` prunes by name),
+    which keeps a world-wide, multi-month dataset searchable.
+    """
+
+    def __init__(self, day_dir: Path):
+        import pyarrow.parquet as pq
+
+        self.pq = pq
+        self.dir = day_dir
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.schema = _arrow_schema()
+        self.writers: dict[tuple[int, int], object] = {}
+
+    def write(self, df: pd.DataFrame) -> None:
+        import pyarrow as pa
+
+        if df.empty:
+            return
+        lat0 = (np.floor(df["lat"].to_numpy() / TILE_DEG) * TILE_DEG).astype(int)
+        lon0 = (np.floor(df["lon"].to_numpy() / TILE_DEG) * TILE_DEG).astype(int)
+        df = df.assign(_la=lat0, _lo=lon0).sort_values(["_la", "_lo", "icao24", "time"], kind="stable")
+        for (la, lo), g in df.groupby(["_la", "_lo"], sort=False):
+            key = (int(la), int(lo))
+            w = self.writers.get(key)
+            if w is None:
+                w = self.pq.ParquetWriter(self.dir / tile_name(*key), self.schema, compression="zstd")
+                self.writers[key] = w
+            t = pa.Table.from_pandas(g.drop(columns=["_la", "_lo"]), schema=self.schema, preserve_index=False)
+            w.write_table(t)
+
+    def close(self) -> int:
+        for w in self.writers.values():
+            w.close()
+        return len(self.writers)
+
+
+def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float] | None, out_dir: str | Path,
+                      variants=("prod-0", "staging-0"), t_range=None, progress=None, gap_s=1800.0,
+                      chunk_rows: int = 1_000_000, skip_types: set[str] | None = None) -> dict:
+    """Stream one day of the adsb.lol archive into ``out_dir/day=<day>/`` tile files.
+
+    ``bbox`` (S, W, N, E) keeps only points inside it; ``None`` keeps the whole world. ``skip_types``
+    (e.g. the known-jet type codes) drops those aircraft before any parsing. Memory stays bounded:
+    rows are written every ``chunk_rows``. Flight ids are re-derived when the dataset is read.
     """
     parts = []
     used = None
@@ -266,50 +356,62 @@ def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float], out
         raise FileNotFoundError(f"no adsb.lol archive release found for {day} (tried {', '.join(variants)}); "
                                 "releases appear about a day later")
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for old in out_dir.glob(f"part-archive-{day.isoformat()}-*.parquet"):  # re-fetch replaces the day
+    day_dir = out_dir / f"day={day.isoformat()}"
+    if day_dir.exists():  # re-fetching a day replaces it
+        import shutil
+
+        shutil.rmtree(day_dir)
+    for old in out_dir.glob(f"part-archive-{day.isoformat()}-*.parquet"):  # older flat layout
         old.unlink()
     stats = {"day": day.isoformat(), "variant": used, "parts": len(parts), "bytes": sum(s for _, s in parts),
-             "trace_files": 0, "traces_prefiltered_out": 0, "aircraft_in_bbox": 0, "points": 0, "on_ground": 0,
-             "dropped_missing_fields": 0, "rows_out": 0, "files_out": 0}
+             "area": "world" if bbox is None else list(bbox), "trace_files": 0, "traces_prefiltered_out": 0,
+             "traces_skipped_type": 0, "aircraft_kept": 0, "points": 0, "on_ground": 0, "dropped_missing_fields": 0,
+             "rows_out": 0, "tiles_out": 0}
     log.info("adsb.lol %s %s: %d part(s), %.2f GB", day, used, len(parts), stats["bytes"] / 1e9)
     stream = _ConcatHTTP([u for u, _ in parts], progress)
     stream.total = stats["bytes"]
     rows: list[dict] = []
     aircraft: set[str] = set()
+    writer = _TileWriter(day_dir)
+    skip_types = {t.upper() for t in skip_types} if skip_types else None
 
     def flush():
-        if not rows:
-            return
-        df = rows_to_frame(rows, gap_s)
-        df.to_parquet(out_dir / f"part-archive-{day.isoformat()}-{stats['files_out']:03d}.parquet", index=False)
-        stats["rows_out"] += len(df)
-        stats["files_out"] += 1
-        rows.clear()
+        if rows:
+            df = rows_to_frame(rows, gap_s)
+            writer.write(df)
+            stats["rows_out"] += len(df)
+            rows.clear()
 
-    with tarfile.open(fileobj=io.BufferedReader(stream, 1 << 20), mode="r|") as tar:
-        for m in tar:
-            if not m.isfile() or "trace_full" not in m.name:
-                continue
-            stats["trace_files"] += 1
-            raw = tar.extractfile(m).read()
-            if raw[:2] == b"\x1f\x8b":
-                raw = gzip.decompress(raw)
-            try:
-                obj = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not _trace_may_touch(obj, bbox):
-                stats["traces_prefiltered_out"] += 1
-                continue
-            got = parse_trace(obj, stats, bbox, t_range)
-            if got:
-                aircraft.add(got[0]["icao24"])
-                rows += got
-                if len(rows) >= chunk_rows:
-                    flush()
-    flush()
-    stats["aircraft_in_bbox"] = len(aircraft)
+    try:
+        with tarfile.open(fileobj=io.BufferedReader(stream, 1 << 20), mode="r|") as tar:
+            for m in tar:
+                if not m.isfile() or "trace_full" not in m.name:
+                    continue
+                stats["trace_files"] += 1
+                raw = tar.extractfile(m).read()
+                if raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if skip_types and str(obj.get("t") or "").upper() in skip_types:
+                    stats["traces_skipped_type"] += 1
+                    continue
+                if bbox is not None and not _trace_may_touch(obj, bbox):
+                    stats["traces_prefiltered_out"] += 1
+                    continue
+                got = parse_trace(obj, stats, bbox, t_range)
+                if got:
+                    aircraft.add(got[0]["icao24"])
+                    rows += got
+                    if len(rows) >= chunk_rows:
+                        flush()
+        flush()
+    finally:
+        stats["tiles_out"] = writer.close()
+    stats["aircraft_kept"] = len(aircraft)
+    (day_dir / "_day.json").write_text(json.dumps(stats, indent=1))
     log.info("adsb.lol %s: %s", day, stats)
     return stats
 

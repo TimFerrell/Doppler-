@@ -142,13 +142,15 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
 
     def enqueue_archive_day(name: str, day: str, end_day: str | None = None) -> str:
         m = lib.meta(name)
-        s_, w_, n_, e_ = m["request_bbox"]
+        bb = m.get("request_bbox")
         label = day if not end_day or end_day == day else f"{day} → {end_day}"
         job_id, d = jobs.new_job("rehydrate", f"Rehydrate {label} from adsb.lol → {name}",
-                                 {"date": day, "end_date": end_day, "bbox": m["request_bbox"], "dataset": name})
+                                 {"date": day, "end_date": end_day, "bbox": bb, "dataset": name})
         cfgp = write_config(d, {})
-        argv = ["--config", str(cfgp), "fetch-adsblol", "--date", day, "--bbox", f"{s_},{w_},{n_},{e_}",
-                "--out", str(lib.path(name))]
+        argv = ["--config", str(cfgp), "fetch-adsblol", "--date", day,
+                "--bbox", ("world" if not bb else ",".join(str(v) for v in bb)), "--out", str(lib.path(name))]
+        if m.get("skip_jets"):
+            argv.append("--skip-jets")
         if end_day and end_day != day:
             argv += ["--end-date", end_day]
         jobs.submit(job_id, [{"argv": argv}])
@@ -274,7 +276,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         out = []
         for m in lib.list():
             d = lib.path(m["name"])
-            parts = list(d.glob("*.parquet"))
+            parts = list(d.rglob("*.parquet"))
             mt = (d / "meta.json").stat().st_mtime
             if parts and (m.get("rows", 0) == 0 or max(p.stat().st_mtime for p in parts) > mt + 1):
                 try:
@@ -379,7 +381,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 if not lib.exists(dsname):
                     raise FormError(f"unknown ADS-B dataset {dsname!r}")
                 meta = lib.meta(dsname)
-                if not list(lib.path(dsname).glob("*.parquet")):
+                if not any(lib.path(dsname).rglob("*.parquet")):
                     raise FormError(f"dataset {dsname} holds no data yet")
                 adsb_path = lib.path(dsname)
                 max_gap = meta.get("max_gap_s")
@@ -553,26 +555,35 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 raise FormError("at most 31 days per request (each day is a ~3.5 GB download)")
             if end >= dt.datetime.now(dt.timezone.utc).date():
                 raise FormError("the archive only has complete past UTC days (published about a day later)")
-            s, w, n, e = (fnum(k, lo, hi) for k, lo, hi in (("south", -90, 90), ("west", -180, 180),
-                                                             ("north", -90, 90), ("east", -180, 180)))
-            if not (s < n and w < e):
-                raise FormError("the bounding box needs south < north and west < east")
-            if (n - s) * (e - w) > 400:
-                raise FormError("bounding box larger than 400 square degrees; narrow it")
-            region = re.sub(r"[^A-Za-z0-9]+", "-", request.form.get("region_label", "").strip()).strip("-").lower()
-            name = ds_name(f"adsblol-{region or f'{s:.1f}_{w:.1f}_{n:.1f}_{e:.1f}'}")
+            world = request.form.get("region_label", "").strip().lower() == "whole world"
+            skip_jets = request.form.get("skip_jets") == "yes"
+            if world:
+                bbox = None
+                region = "world"
+            else:
+                s, w, n, e = (fnum(k, lo, hi) for k, lo, hi in (("south", -90, 90), ("west", -180, 180),
+                                                                 ("north", -90, 90), ("east", -180, 180)))
+                if not (s < n and w < e):
+                    raise FormError("the bounding box needs south < north and west < east")
+                bbox = [s, w, n, e]
+                region = re.sub(r"[^A-Za-z0-9]+", "-", request.form.get("region_label", "").strip()).strip("-").lower()
+                region = region or f"{s:.1f}_{w:.1f}_{n:.1f}_{e:.1f}"
+            name = ds_name(f"adsblol-{region}{'-props' if skip_jets else ''}")
             subscribe = request.form.get("subscribe") == "yes"
             if lib.exists(name):
                 m = lib.meta(name)
-                if m.get("kind") != "archive" or [round(v, 4) for v in m.get("request_bbox", [])] != \
-                        [round(v, 4) for v in (s, w, n, e)]:
+                same_box = ((m.get("request_bbox") is None and bbox is None) or
+                            (m.get("request_bbox") and bbox and
+                             [round(v, 4) for v in m["request_bbox"]] == [round(v, 4) for v in bbox]))
+                if m.get("kind") != "archive" or not same_box or bool(m.get("skip_jets")) != skip_jets:
                     raise FormError(f"dataset {name} exists with a different source or box; pick another name")
                 if subscribe and not m.get("subscribe"):
                     lib.update_meta(name, subscribe=True, since=m.get("since") or day.isoformat())
         except FormError as err:
             return page(str(err), "data", 400)
         if not lib.exists(name):
-            lib.create(name, {"source": "adsb.lol archive (ODbL 1.0)", "kind": "archive", "request_bbox": [s, w, n, e],
+            lib.create(name, {"source": "adsb.lol archive (ODbL 1.0)", "kind": "archive", "request_bbox": bbox,
+                              "skip_jets": skip_jets,
                               "region": request.form.get("region_label", "").strip() or None, "days": [],
                               "subscribe": subscribe, "since": day.isoformat(), "max_gap_s": 120.0,
                               "license": "ODbL 1.0 — attribute adsb.lol; share derived databases alike"})
@@ -663,7 +674,21 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             abort(404)
         from .. import adsb
 
-        df = adsb.read_table(lib.path(name))
+        meta = lib.meta(name)
+        bbox = None
+        try:
+            bbox = tuple(float(v) for v in request.args["bbox"].split(",")) if request.args.get("bbox") else None
+        except ValueError:
+            abort(400)
+        t_range = None
+        big = meta.get("size_bytes", 0) > 200e6 or (meta.get("rows") or 0) > 3_000_000
+        if big:
+            if bbox is None or (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) > 150:
+                return jsonify({"type": "FeatureCollection", "features": [], "total_flights": 0,
+                                "note": "This dataset is large: zoom in to a region (under about 10° x 15°) to preview it."})
+            if meta.get("t_max"):
+                t_range = (meta["t_max"] - 86400, meta["t_max"])
+        df = adsb.read_table(lib.path(name), bbox=bbox if big else None, t_range=t_range)
         feats = []
         groups = df.groupby(["icao24", "flight_id"])
         total = groups.ngroups

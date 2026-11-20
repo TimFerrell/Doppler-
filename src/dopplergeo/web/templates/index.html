@@ -210,11 +210,13 @@
     <form method="post" action="{{ url_for('data_rehydrate') }}" class="sub">
       <input type="hidden" name="tab" value="data">
       <h3>Rehydrate a past day</h3>
-      <p class="muted small">From the <a href="https://www.adsb.lol/docs/open-data/historical/" rel="noreferrer">adsb.lol open archive</a>
+      <p class="muted small"><b>Each day is one ~3.6 GB download covering the whole world</b>, whatever area you choose; the area only decides
+        how much is kept on disk. Source: the <a href="https://www.adsb.lol/docs/open-data/historical/" rel="noreferrer">adsb.lol open archive</a>
         (ODbL 1.0, all aircraft, one release per UTC day, published about a day later). The whole day (≈3.5 GB) is
         streamed and only aircraft inside the box are kept. Archive tracks are thinned (a point every ~20 s in straight flight).</p>
       <label>Area
-        <select id="region-preset"><option value="">— custom box (or use the map view) —</option></select></label>
+        <select id="region-preset"><option value="">— custom box (or use the map view) —</option>
+          <option value="world">Whole world (no area filter)</option></select></label>
       <input type="hidden" name="region_label" value="{{ form.region_label }}">
       <div class="grid2 tight">
         <label>South <input name="south" inputmode="decimal" value="{{ form.south }}" required></label>
@@ -227,6 +229,8 @@
         <label>From (UTC day) <input type="date" name="date" value="{{ form.date or yesterday }}" max="{{ yesterday }}" required></label>
         <label>To <small>optional</small><input type="date" name="end_date" value="{{ form.end_date }}" max="{{ yesterday }}"></label>
       </div>
+      <label class="check"><input type="checkbox" name="skip_jets" value="yes" {{ 'checked' if form.skip_jets == 'yes' or not form }}>
+        <span>Skip known jets (they are never used for locating; this roughly halves processing and storage)</span></label>
       <label class="check"><input type="checkbox" name="subscribe" value="yes" {{ 'checked' if form.subscribe == 'yes' }}>
         <span>Keep updated: fetch each new day automatically as it is published (checked hourly while this server runs)</span></label>
       <label>Dataset name <small>optional</small><input name="dataset_name" value="{{ form.dataset_name }}"></label>

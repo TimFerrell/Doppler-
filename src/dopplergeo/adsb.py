@@ -225,6 +225,25 @@ def write_parquet(df: pd.DataFrame, path: str | Path) -> None:
     validate(df).to_parquet(path, index=False)
 
 
+def _keep_file(f: Path, bbox, t_range) -> bool:
+    """Prune ``day=YYYY-MM-DD/tile_<lat>_<lon>.parquet`` files that cannot overlap the query."""
+    import datetime as _dt
+    import re as _re
+
+    m = _re.match(r"^day=(\d{4}-\d{2}-\d{2})$", f.parent.name)
+    if m and t_range is not None:
+        d0 = _dt.datetime.fromisoformat(m.group(1)).replace(tzinfo=_dt.timezone.utc).timestamp()
+        if d0 + 86400 + 3600 < t_range[0] or d0 - 3600 > t_range[1]:
+            return False
+    m = _re.match(r"^tile_([+-]\d+)_([+-]\d+)\.parquet$", f.name)
+    if m and bbox is not None:
+        la, lo = int(m.group(1)), int(m.group(2))
+        s, w, n, e = bbox
+        if la + 10 < s or la > n or lo + 10 < w or lo > e:
+            return False
+    return True
+
+
 def read_table(path: str | Path, flight_gap_s: float = 1800.0, bbox=None, t_range=None) -> pd.DataFrame:
     """Unified parquet file, or a directory of part files (flight ids are re-derived across parts).
 
@@ -234,8 +253,12 @@ def read_table(path: str | Path, flight_gap_s: float = 1800.0, bbox=None, t_rang
     p = Path(path)
     if not (p.suffix == ".parquet" or p.is_dir()):
         raise ADSBError(f"expected a unified parquet file/dir, got {p} (run `dopplergeo ingest-adsb` first)")
-    files = sorted(p.glob("*.parquet")) if p.is_dir() else [p]
+    files = sorted(p.rglob("*.parquet")) if p.is_dir() else [p]
+    if p.is_dir():
+        files = [f for f in files if _keep_file(f, bbox, t_range)]
     if not files:
+        if p.is_dir() and any(p.rglob("*.parquet")):
+            return coerce(pd.DataFrame({c: pd.Series(dtype=t) for c, t in SCHEMA.items()}))
         raise ADSBError(f"no parquet files in {p}")
     import pyarrow.dataset as ds
 
@@ -252,7 +275,7 @@ def read_table(path: str | Path, flight_gap_s: float = 1800.0, bbox=None, t_rang
         flt = ft if flt is None else flt & ft
     df = dset.to_table(filter=flt).to_pandas()
     df = validate(df, str(p))
-    if len(files) > 1 or bbox is not None or t_range is not None:
+    if p.is_dir() or bbox is not None or t_range is not None:
         df["_k"] = np.round(df["time"].to_numpy(float), 1)
         df = df.drop_duplicates(["icao24", "_k"]).drop(columns="_k")
         df = coerce(assign_flight_ids(df, flight_gap_s))

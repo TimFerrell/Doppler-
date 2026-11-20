@@ -68,13 +68,34 @@ def test_fetch_day_streams_split_tar_and_filters(tmp_path, monkeypatch):
     urls = _split_tar(tmp_path, traces)
     monkeypatch.setattr(sources, "adsblol_part_urls", lambda day, variant="prod-0", max_parts=12: urls)
     out = tmp_path / "ds"
-    st = sources.fetch_adsblol_day(dt.date(2026, 1, 2), (24, -88, 31, -79), out, chunk_rows=400)
-    assert st["trace_files"] == 31 and st["traces_prefiltered_out"] == 1 and st["aircraft_in_bbox"] == 30
-    assert st["rows_out"] == 1500 and st["files_out"] >= 3  # written in chunks
+    st = sources.fetch_adsblol_day(dt.date(2023, 11, 14), (24, -88, 31, -79), out, chunk_rows=400)
+    assert st["trace_files"] == 31 and st["traces_prefiltered_out"] == 1 and st["aircraft_kept"] == 30
+    assert st["rows_out"] == 1500 and st["tiles_out"] == 1
+    assert (out / "day=2023-11-14" / "tile_+20_-090.parquet").exists()
     df = adsb.read_table(out)
-    assert len(df) == 1500 and df["flight_id"].nunique() == 30  # ids re-derived across part files
+    assert len(df) == 1500 and df["flight_id"].nunique() == 30  # ids re-derived across chunks
     sub = adsb.read_table(out, bbox=(27.0, -81.5, 27.1, -80.5), t_range=(1.7e9, 1.7e9 + 200))
     assert len(sub) == 30 * 11 and sub["lat"].max() <= 27.1
+
+
+def test_fetch_world_skips_jets_and_tiles_prune(tmp_path, monkeypatch):
+    traces = [_trace("a00001", 1.7e9, [(27.0, -81.0 + 0.01 * j, 2000) for j in range(20)]),
+              _trace("a00002", 1.7e9, [(51.5, -0.1 + 0.01 * j, 2000) for j in range(20)]),
+              _trace("a00003", 1.7e9, [(40.0, -100.0, 9000)] * 20, t="B738")]
+    urls = _split_tar(tmp_path, traces)
+    monkeypatch.setattr(sources, "adsblol_part_urls", lambda day, variant="prod-0", max_parts=12: urls)
+    out = tmp_path / "world"
+    st = sources.fetch_adsblol_day(dt.date(2023, 11, 14), None, out, skip_types={"B738"})
+    assert st["area"] == "world" and st["traces_skipped_type"] == 1 and st["aircraft_kept"] == 2
+    assert st["tiles_out"] == 3  # the London track crosses 0° longitude: two tiles
+    assert len(adsb.read_table(out)) == 40
+    # a Florida query never opens the London tile; a query for another day opens nothing
+    assert set(adsb.read_table(out, bbox=(24, -88, 31, -79))["icao24"]) == {"a00001"}
+    assert len(adsb.read_table(out, t_range=(1.8e9, 1.8e9 + 60))) == 0
+    lib = sources.Library(tmp_path)
+    (out / "meta.json").write_text(json.dumps({"name": "world"}))
+    m = lib.refresh("world")
+    assert m["rows"] == 40 and m["flights"] == 2
 
 
 def test_archive_scheduler_queues_new_days(tmp_path, monkeypatch):

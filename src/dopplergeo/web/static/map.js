@@ -189,8 +189,11 @@
     let layer = null;
     const show = async name => {
       el.closest('.panel').querySelector('#datamap-note').textContent = `Loading ${name}…`;
-      const r = await fetch(`/data/${encodeURIComponent(name)}/tracks.json`);
+      const bb = map.getBounds();
+      const r = await fetch(`/data/${encodeURIComponent(name)}/tracks.json?bbox=` +
+        [bb.getSouth(), bb.getWest(), bb.getNorth(), bb.getEast()].map(v => v.toFixed(3)).join(','));
       const g = await r.json();
+      if (g.note) { el.closest('.panel').querySelector('#datamap-note').textContent = g.note; return; }
       if (layer) layer.remove();
       layer = L.geoJSON(g, {pane: 'data', style: {color: css('--accent'), weight: 1.2, opacity: 0.7},
         onEachFeature: (ft, l) => l.bindTooltip(`${ft.properties.icao24}${ft.properties.type_code ? ' · ' + ft.properties.type_code : ''}`, {sticky: true})}).addTo(map);
@@ -206,6 +209,7 @@
         set('south', bb.getSouth().toFixed(3)); set('north', bb.getNorth().toFixed(3));
         set('west', bb.getWest().toFixed(3)); set('east', bb.getEast().toFixed(3)); set('region_label', '');
         const rp = form.querySelector('#region-preset'); if (rp) rp.value = '';
+        ['south', 'west', 'north', 'east'].forEach(k => { const i = form.querySelector(`[name="${k}"]`); i.disabled = false; i.required = true; });
       } else {
         const c = map.getCenter(); set('lat', c.lat.toFixed(4)); set('lon', c.lng.toFixed(4));
       }
@@ -231,8 +235,15 @@
       }
       sel.addEventListener('change', () => {
         if (!sel.value) return;
-        const form = sel.closest('form'), [s, w, n, e] = sel.value.split(',');
-        const set = (k, v) => { form.querySelector(`[name="${k}"]`).value = v; };
+        const form = sel.closest('form'), set = (k, v) => { form.querySelector(`[name="${k}"]`).value = v; };
+        const boxIn = ['south', 'west', 'north', 'east'].map(k => form.querySelector(`[name="${k}"]`));
+        if (sel.value === 'world') {
+          boxIn.forEach(i => { i.value = ''; i.required = false; i.disabled = true; });
+          set('region_label', 'Whole world');
+          return;
+        }
+        boxIn.forEach(i => { i.required = true; i.disabled = false; });
+        const [s, w, n, e] = sel.value.split(',');
         // pad by 0.2 deg so flights approaching the border are kept
         set('south', (+s - 0.2).toFixed(2)); set('west', (+w - 0.2).toFixed(2));
         set('north', (+n + 0.2).toFixed(2)); set('east', (+e + 0.2).toFixed(2));

@@ -196,9 +196,17 @@ def cmd_fetch_adsblol(args, cfg) -> int:
 
     from . import sources
 
-    s, w, n, e = (float(v) for v in args.bbox.split(","))
-    if not (s < n and w < e):
-        raise SystemExit("--bbox must be S,W,N,E with S<N and W<E")
+    bbox = None
+    if args.bbox and args.bbox.lower() != "world":
+        s, w, n, e = (float(v) for v in args.bbox.split(","))
+        if not (s < n and w < e):
+            raise SystemExit("--bbox must be S,W,N,E with S<N and W<E, or 'world'")
+        bbox = (s, w, n, e)
+    skip = None
+    if args.skip_jets:
+        from .filters import load_jet_types
+
+        skip = load_jet_types(cfg["adsb"]["jet_types_csv"])
     d0 = dt.date.fromisoformat(args.date)
     d1 = dt.date.fromisoformat(args.end_date) if args.end_date else d0
     if d1 < d0:
@@ -214,8 +222,8 @@ def cmd_fetch_adsblol(args, cfg) -> int:
     total = 0
     day = d0
     while day <= d1:
-        stats = sources.fetch_adsblol_day(day, (s, w, n, e), out, progress=progress,
-                                          gap_s=float(cfg["adsb"]["flight_gap_s"]))
+        stats = sources.fetch_adsblol_day(day, bbox, out, progress=progress,
+                                          gap_s=float(cfg["adsb"]["flight_gap_s"]), skip_types=skip)
         total += stats["rows_out"]
         print(yaml.safe_dump({"out": str(out), **stats}, sort_keys=False))
         meta = out / "meta.json"
@@ -315,7 +323,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("fetch-adsblol", help="rehydrate one day from the adsb.lol open archive (ODbL), bbox-filtered")
     s.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
     s.add_argument("--end-date", help="last UTC day of a range (inclusive)")
-    s.add_argument("--bbox", required=True, help="S,W,N,E degrees (Florida: 24.4,-87.7,31.1,-79.9)")
+    s.add_argument("--bbox", default="world", help="S,W,N,E degrees (Florida: 24.2,-87.8,31.2,-79.8), or 'world' (default)")
+    s.add_argument("--skip-jets", action="store_true", help="do not store aircraft of known jet types")
     s.add_argument("--out", required=True, help="output directory (a library dataset dir, or any folder)")
 
     s = sub.add_parser("extract-audio", help="video (MOV/MP4/...) -> mono WAV; prints recording time from metadata")
