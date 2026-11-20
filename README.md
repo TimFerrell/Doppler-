@@ -33,25 +33,31 @@ dopplergeo serve            # then open http://127.0.0.1:8765/  (run from the re
 dopplergeo --config my.yaml serve --port 8765 --jobs-dir data/out/web
 ```
 
-A local web front end to the same pipeline:
+A local web front end to the same pipeline, with five tabs:
 
-* **Locate**: upload a recording and ADS-B data (a unified `.parquet`, or tar1090 / readsb JSON
-  logs, or a `.zip` of them; logs are ingested automatically), set the search region and optional
-  start time, elevation/DEM, flyover times and known location. Advanced: refinement levels, clock
-  window, harmonics.
-* **Measure flyovers**: Doppler-curve fits only, no ADS-B needed.
-* **Synthetic demo**: the Phase 0 validation for any seeds.
+* **Locate**: choose a recording (from your recordings, or upload audio or **video**: MOV/MP4 audio is
+  extracted with the bundled ffmpeg and the start time is read from its metadata) and ADS-B data (a
+  library dataset, or upload a `.parquet` or tar1090/readsb logs). Set the search region by clicking the US
+  map, then add optional start time, elevation/DEM, flyover times and a known location.
+* **Record**: record from this computer's microphone (echo cancellation, noise suppression and auto-gain
+  off; raw 16 kHz PCM; live 0–500 Hz spectrogram). The UTC start comes from the computer clock. You can
+  also **import a video or audio file** into the recordings library.
+* **ADS-B data**: the data library. *Rehydrate* past days from the adsb.lol open archive for a box or
+  a **whole state** (e.g. Florida), optionally **kept updated daily**. *Collect live* from your own
+  receiver or the adsb.lol / airplanes.live point APIs. *Import* receiver logs. Preview any dataset on
+  the map. Sources and trade-offs: [docs/adsb_sources.md](docs/adsb_sources.md).
+* **Measure**: Doppler-curve fits only. **Synthetic demo**: Phase 0 validation.
 
-Each submission becomes a job (one runs at a time, the rest queue) with a live log, result
-summary (best location, error vs a known location, margin over the next flight pair), a candidate
-map, the plots, the rendered report, CSV downloads and a results `.zip`. Jobs are stored under
-`--jobs-dir` and survive restarts.
+Results show on a **US map**: candidate cells coloured by score, the flight tracks (those used for the
+#1 answer highlighted), the search region, the best point and the known location, plus a US overview
+inset. The basemap is bundled (US Census state/county outlines via us-atlas, Natural Earth places;
+Leaflet 1.9.4), so viewing results sends nothing anywhere. An optional *Street map* layer (OpenStreetMap
+tiles) is off by default and asks before loading, since it reveals the viewed area to openstreetmap.org.
 
-Every job runs the same CLI commands, so results match the command line exactly; the authorization
-attestation is a required checkbox. The server binds to `127.0.0.1` by default, makes no outbound
-network requests, and its pages load no third-party scripts or map tiles (the candidate map is drawn
-locally), so recording locations never leave the machine. Binding to another address logs a warning:
-there is no login, so anyone who can reach the port can submit jobs and read results.
+Jobs run one at a time with a live log. Each gives a report, CSVs and a results `.zip`, and jobs survive
+restarts. Every job runs the same CLI commands as the command line; the authorization attestation is a
+required checkbox. The server binds to `127.0.0.1` by default and goes online only for rehydrating and
+live collection. Binding to another address logs a warning: there is no login.
 
 ## CLI
 
@@ -63,6 +69,9 @@ dopplergeo --config my.yaml locate --audio rec.wav --region center=LAT,LON,radiu
            --adsb data/adsb/day.parquet --out data/out/run1 --attest-authorized [--truth-latlon LAT,LON]
 dopplergeo locate-area ...   # Phase B: not built yet (gated)
 dopplergeo serve [--host 127.0.0.1] [--port 8765] [--jobs-dir data/out/web]
+dopplergeo fetch-adsblol --date 2026-11-18 [--end-date ...] --bbox 24.2,-87.8,31.2,-79.8 --out data/adsb/library/fl
+dopplergeo collect --source receiver|adsb.lol|airplanes.live ... --dataset NAME
+dopplergeo extract-audio --video clip.mov --out clip.wav     # prints the recording time from metadata
 ```
 
 Every run writes `out/<run>/report.md` (inputs + SHA-256, attestation, per-event fits, candidate

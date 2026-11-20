@@ -16,18 +16,105 @@ def sha256(path: str | Path) -> str:
     return h.hexdigest()
 
 
-def load_audio(path: str | Path, target_sr: int) -> tuple[np.ndarray, int]:
-    """Load mono float32 audio resampled to ``target_sr``. WAV/FLAC via soundfile, else librosa."""
-    path = Path(path)
-    try:
-        import soundfile as sf
+VIDEO_EXT = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp", ".mts", ".m2ts"}
+NATIVE_EXT = {".wav", ".flac", ".ogg", ".mp3", ".aiff", ".aif"}
 
+
+def ffmpeg_exe() -> str:
+    """Bundled ffmpeg (imageio-ffmpeg wheel), else one on PATH."""
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001
+        import shutil
+
+        exe = shutil.which("ffmpeg")
+        if not exe:
+            raise RuntimeError("ffmpeg not found: pip install imageio-ffmpeg (or install ffmpeg)") from None
+        return exe
+
+
+def _parse_time(v: str) -> float | None:
+    import datetime as dt
+    import re
+
+    v = v.strip()
+    v = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", v)  # -0400 -> -04:00
+    try:
+        d = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.timestamp()
+
+
+def media_info(path: str | Path) -> dict:
+    """Duration, audio presence and recording time from a media file's container metadata.
+
+    ``start_utc`` prefers Apple's ``com.apple.quicktime.creationdate`` (local time with offset, the
+    moment recording started); otherwise the generic ``creation_time`` (UTC), which some Android
+    phones write when recording *stops* -- callers should let the user confirm it.
+    """
+    import re
+    import subprocess
+
+    r = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)], capture_output=True, text=True)
+    err = r.stderr
+    info = {"duration_s": None, "has_audio": " Audio:" in err, "has_video": " Video:" in err,
+            "start_utc": None, "time_source": None}
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err)
+    if m:
+        info["duration_s"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    m = re.search(r"com\.apple\.quicktime\.creationdate\s*:\s*(\S+)", err)
+    if m and _parse_time(m.group(1)) is not None:
+        info["start_utc"], info["time_source"] = _parse_time(m.group(1)), "com.apple.quicktime.creationdate"
+    else:
+        m = re.search(r"creation_time\s*:\s*(\S+)", err)
+        if m and _parse_time(m.group(1)) is not None:
+            info["start_utc"], info["time_source"] = _parse_time(m.group(1)), "creation_time"
+    return info
+
+
+def extract_audio(src: str | Path, out_wav: str | Path, sr: int = 16000) -> Path:
+    """First audio stream of a video (or any media file) -> mono 16-bit WAV at ``sr``."""
+    import subprocess
+
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(src), "-vn", "-map", "0:a:0",
+           "-ac", "1", "-ar", str(int(sr)), "-c:a", "pcm_s16le", str(out_wav)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 or not out_wav.exists():
+        raise RuntimeError(f"ffmpeg could not extract audio from {src}: {r.stderr.strip()[-500:]}")
+    return out_wav
+
+
+def load_audio(path: str | Path, target_sr: int) -> tuple[np.ndarray, int]:
+    """Load mono float32 audio resampled to ``target_sr``.
+
+    WAV/FLAC/OGG/MP3 via soundfile; video files and other containers (MOV, MP4, M4A, ...) via ffmpeg.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in NATIVE_EXT:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            wav = extract_audio(path, Path(td) / "audio.wav", target_sr)
+            return load_audio(wav, target_sr)
+    import soundfile as sf
+
+    try:
         x, sr = sf.read(str(path), dtype="float32", always_2d=True)
         x = x.mean(axis=1)
-    except Exception:
-        import librosa
+    except Exception:  # noqa: BLE001 - e.g. an MP3 variant libsndfile cannot read
+        import tempfile
 
-        x, sr = librosa.load(str(path), sr=None, mono=True)
+        with tempfile.TemporaryDirectory() as td:
+            wav = extract_audio(path, Path(td) / "audio.wav", target_sr)
+            x, sr = sf.read(str(wav), dtype="float32", always_2d=True)
+            x = x.mean(axis=1)
     if sr != target_sr:
         from math import gcd
 

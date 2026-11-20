@@ -14,7 +14,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.chdir(ROOT)  # the default jet table path is repository-relative
     from dopplergeo.web import create_app
 
-    app = create_app(tmp_path / "jobs")
+    app = create_app(tmp_path / "jobs", library_dir=tmp_path / "lib", recordings_dir=tmp_path / "rec", scheduler=False)
     app.testing = True
     return app.test_client(), tmp_path / "jobs"
 
@@ -35,7 +35,11 @@ def test_index_renders(client):
     assert r.status_code == 200
     html = r.get_data(as_text=True)
     assert "I own this recording" in html and 'name="adsb"' in html
-    assert "https://" not in html.split("<footer")[0]  # no third-party resources
+    import re
+
+    # no third-party resources: every script/stylesheet/image is served by this app
+    srcs = re.findall(r'<(?:script|img)[^>]+src="([^"]+)"', html) + re.findall(r'<link[^>]+href="([^"]+)"', html)
+    assert srcs and all(u.startswith("/") for u in srcs), srcs
 
 
 def test_locate_requires_attestation_and_leaves_no_job(client):
@@ -80,3 +84,37 @@ def test_synth_job_end_to_end_and_file_safety(client):
     assert c.get(f"/jobs/{job_id}/files/%2e%2e/%2e%2e/config.yaml").status_code == 404
     assert c.get(f"/jobs/{job_id}/candidates.json?run=../..").status_code == 404
     assert c.get("/jobs/nope/status.json").status_code == 404
+
+
+def test_recording_upload_and_video_import(client, tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    c, _ = client
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(16000, np.float32), 16000, format="WAV")
+    r = c.post("/recordings", data={"audio": (io.BytesIO(buf.getvalue()), "r.wav"), "start_utc": "1725009530.25",
+                                    "label": "yard"}, content_type="multipart/form-data")
+    j = r.get_json()
+    assert r.status_code == 200 and j["name"] == "rec-20240830T091850Z-yard.wav" and j["duration_s"] == 1.0
+    assert c.get(f"/recordings/{j['name']}").status_code == 200
+    assert c.post("/recordings", data={"audio": (io.BytesIO(b"nope"), "r.wav"), "start_utc": "1"},
+                  content_type="multipart/form-data").status_code == 400
+    assert c.get("/recordings/..%2fx.wav").status_code == 404
+    page = c.get("/?tab=record").get_data(as_text=True)
+    assert "rec-20240830T091850Z-yard.wav" in page
+
+
+def test_rehydrate_form_validation(client):
+    c, _ = client
+    import datetime as dt
+
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    base = {"south": "24.2", "west": "-87.8", "north": "31.2", "east": "-79.8", "region_label": "Florida"}
+    r = c.post("/data/rehydrate", data={**base, "date": today})
+    assert r.status_code == 400 and "past UTC days" in r.get_data(as_text=True)
+    r = c.post("/data/rehydrate", data={**base, "date": "2026-01-01", "south": "0", "north": "60", "west": "-130",
+                                        "east": "-60"})
+    assert r.status_code == 400 and "400 square degrees" in r.get_data(as_text=True)
+    r = c.post("/data/rehydrate", data={**base, "date": "2026-01-05", "end_date": "2026-01-01"})
+    assert r.status_code == 400

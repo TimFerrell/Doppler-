@@ -1,27 +1,37 @@
 """Local web interface: ``dopplergeo serve``.
 
-Binds to 127.0.0.1 by default. The server makes no outbound network calls and the pages load no
-third-party resources (no CDN scripts, no map tiles), so recording locations never leave the machine.
+Binds to 127.0.0.1 by default. The pages load no third-party resources: the map (Leaflet, US Census
+state/county outlines, Natural Earth places) is bundled. The server only contacts the network when you
+explicitly ask it to (rehydrating from the adsb.lol archive, or a live point-API collector), and the
+optional OpenStreetMap street layer is off unless you switch it on in the map.
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
 import json
 import math
+import re
+import time
 import zipfile
 from pathlib import Path
 
 import markdown
 import pandas as pd
 import yaml
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
+from flask import (Flask, abort, jsonify, redirect, render_template, request, send_file, send_from_directory,
+                   url_for)
 from werkzeug.utils import secure_filename
 
 from .. import config as configmod
+from .. import sources
 from .jobs import JobManager
 
 AUDIO_EXT = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".aiff", ".aif"}
+VIDEO_EXT = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".3gp", ".mts", ".m2ts"}
+MEDIA_EXT = AUDIO_EXT | VIDEO_EXT
 ADSB_EXT = {".parquet", ".json", ".jsonl", ".gz", ".zip"}
+REC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,100}\.wav$")
 
 
 class FormError(ValueError):
@@ -29,7 +39,8 @@ class FormError(ValueError):
 
 
 def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | None = None,
-               max_upload_mb: int = 4096) -> Flask:
+               max_upload_mb: int = 4096, library_dir: str | Path = "data/adsb/library",
+               recordings_dir: str | Path = "data/audio/recordings", scheduler: bool = True) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = max_upload_mb * 1024 * 1024
     base_raw = {}
@@ -44,8 +55,30 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         raise FileNotFoundError(f"jet type table {jets} not found: run `dopplergeo serve` from the repository root "
                                 "or set adsb.jet_types_csv to an absolute path in --config")
     base_raw = configmod.deep_merge(base_raw, {"adsb": {"jet_types_csv": str(jets)}})
+    cfg_full = configmod.load_config(overrides=base_raw)
     jobs = JobManager(jobs_dir)
-    app.extensions["dopplergeo_jobs"] = jobs
+    lib = sources.Library(Path(library_dir).resolve())
+    collectors = sources.CollectorManager(lib, cfg_full)
+    rec_dir = Path(recordings_dir).resolve()
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    app.extensions["dopplergeo"] = {"jobs": jobs, "library": lib, "collectors": collectors, "recordings": rec_dir}
+
+    def enqueue_archive_day(name: str, day: str, end_day: str | None = None) -> str:
+        m = lib.meta(name)
+        s_, w_, n_, e_ = m["request_bbox"]
+        label = day if not end_day or end_day == day else f"{day} → {end_day}"
+        job_id, d = jobs.new_job("rehydrate", f"Rehydrate {label} from adsb.lol → {name}",
+                                 {"date": day, "end_date": end_day, "bbox": m["request_bbox"], "dataset": name})
+        cfgp = write_config(d, {})
+        argv = ["--config", str(cfgp), "fetch-adsblol", "--date", day, "--bbox", f"{s_},{w_},{n_},{e_}",
+                "--out", str(lib.path(name))]
+        if end_day and end_day != day:
+            argv += ["--end-date", end_day]
+        jobs.submit(job_id, [{"argv": argv}])
+        return job_id
+
+    sched = sources.ArchiveScheduler(lib, lambda name, day: enqueue_archive_day(name, day))
+    app.extensions["dopplergeo"]["scheduler"] = sched
 
     # ------------------------------------------------------------------ helpers
     def write_config(d: Path, overrides: dict) -> Path:
@@ -112,24 +145,89 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         p.unlink()
         return n
 
-    def audio_upload(d: Path) -> Path:
+    def save_adsb_uploads(files, src: Path) -> list[Path]:
+        saved = [save_upload(f, src, ADSB_EXT) for f in files]
+        for p in [p for p in saved if p.suffix.lower() == ".zip"]:
+            if extract_zip(p, src) == 0:
+                raise FormError(f"{p.name}: no .json/.jsonl/.gz/.parquet files inside")
+        return saved
+
+    def recordings() -> list[dict]:
+        out = []
+        for p in sorted(rec_dir.glob("*.wav"), key=lambda q: q.stat().st_mtime, reverse=True):
+            meta = {}
+            mp = p.with_suffix(".json")
+            if mp.exists():
+                try:
+                    meta = json.loads(mp.read_text())
+                except json.JSONDecodeError:
+                    meta = {}
+            out.append({"name": p.name, "size_mb": p.stat().st_size / 1e6, **meta})
+        return out
+
+    def recording_path(name: str) -> Path:
+        if not REC_RE.match(name or "") or not (rec_dir / name).is_file():
+            raise FormError(f"unknown recording {name!r}")
+        return rec_dir / name
+
+    def recording_meta(name: str) -> dict:
+        mp = (rec_dir / name).with_suffix(".json")
+        return json.loads(mp.read_text()) if mp.exists() else {}
+
+    def audio_input(d: Path) -> tuple[Path, dict]:
+        """(audio path, recording metadata) from the library picker or an upload."""
+        name = request.form.get("recording", "").strip()
+        if name:
+            return recording_path(name), recording_meta(name)
         fs = request.files.get("audio")
         if fs is None or not fs.filename:
-            raise FormError("choose an audio file")
-        return save_upload(fs, d / "inputs", AUDIO_EXT)
+            raise FormError("choose a recording from the library or upload an audio or video file")
+        p = save_upload(fs, d / "inputs", MEDIA_EXT)
+        meta = {}
+        if p.suffix.lower() in VIDEO_EXT | {".m4a"}:
+            from ..audio import media_info
 
-    # ------------------------------------------------------------------ pages
-    @app.get("/")
-    def index():
-        return render_template("index.html", jobs=jobs.list()[:50], cfg=cfg_preview, error=None, form={})
+            info = media_info(p)
+            if not info["has_audio"]:
+                raise FormError(f"{p.name} has no audio track")
+            meta = {"start_utc": info["start_utc"], "time_source": info["time_source"]}
+        return p, meta
+
+    def datasets() -> list[dict]:
+        out = []
+        for m in lib.list():
+            d = lib.path(m["name"])
+            parts = list(d.glob("*.parquet"))
+            mt = (d / "meta.json").stat().st_mtime
+            if parts and (m.get("rows", 0) == 0 or max(p.stat().st_mtime for p in parts) > mt + 1):
+                try:
+                    m = lib.refresh(m["name"])
+                except Exception:  # noqa: BLE001 - a part still being written
+                    pass
+            m["collecting"] = m["name"] in collectors.active and collectors.active[m["name"]].is_alive()
+            out.append(m)
+        return out
+
+    def page(error=None, tab=None, status=200):
+        return render_template("index.html", jobs=jobs.list()[:50], cfg=cfg_preview, error=error,
+                               form=request.form if error else {}, tab=tab or request.form.get("tab") or
+                               request.args.get("tab") or "locate", recordings=recordings(), datasets=datasets(),
+                               collectors=collectors.statuses(), today=dt.date.today().isoformat(),
+                               yesterday=(dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=2)).isoformat(),
+                               sched={"alive": sched.is_alive(), "last_check": sched.last_check,
+                                      "last_error": sched.last_error}), status
 
     def form_error(msg, d=None, job_id=None):
         if d is not None and job_id is not None:
             import shutil
 
             shutil.rmtree(d, ignore_errors=True)
-        return render_template("index.html", jobs=jobs.list()[:50], cfg=cfg_preview, error=msg,
-                               form=request.form, tab=request.form.get("tab", "locate")), 400
+        return page(msg, status=400)
+
+    # ------------------------------------------------------------------ pages
+    @app.get("/")
+    def index():
+        return page()
 
     @app.post("/jobs/synth")
     def submit_synth():
@@ -153,7 +251,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         job_id, d = jobs.new_job("measure", "Measure flyovers", {})
         try:
             over = attestation()
-            audio = audio_upload(d)
+            audio, _ = audio_input(d)
             ev = events_field()
         except FormError as e:
             return form_error(str(e), d, job_id)
@@ -177,14 +275,6 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             dem = request.form.get("dem_path", "").strip() or None
             if dem and not Path(dem).is_file():
                 raise FormError(f"DEM file not found on the server: {dem}")
-            start = request.form.get("start_utc", "").strip() or None
-            if start:
-                from ..cli import parse_time
-
-                try:
-                    start = parse_time(start)
-                except ValueError as e:
-                    raise FormError(str(e)) from None
             tlat = fnum("truth_lat", -90, 90, required=False)
             tlon = fnum("truth_lon", -180, 180, required=False)
             if (tlat is None) != (tlon is None):
@@ -196,15 +286,40 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             if harmonics is not None and (not harmonics or any(h < 1 or h > 8 for h in harmonics)):
                 raise FormError("harmonics must be integers 1-8, e.g. 1,2,3")
             ev = events_field()
-            audio = audio_upload(d)
-            files = [f for f in request.files.getlist("adsb") if f and f.filename]
-            if not files:
-                raise FormError("add ADS-B data: a unified .parquet, or tar1090/readsb JSON logs (or a .zip of them)")
-            src = d / "inputs" / "adsb"
-            saved = [save_upload(f, src, ADSB_EXT) for f in files]
-            for p in [p for p in saved if p.suffix.lower() == ".zip"]:
-                if extract_zip(p, src) == 0:
-                    raise FormError(f"{p.name}: no .json/.jsonl/.gz/.parquet files inside")
+            audio, rmeta = audio_input(d)
+            start = request.form.get("start_utc", "").strip() or rmeta.get("start_utc")
+            if start:
+                from ..cli import parse_time
+
+                try:
+                    start = parse_time(start)
+                except ValueError as e:
+                    raise FormError(str(e)) from None
+            dsname = request.form.get("dataset", "").strip()
+            max_gap = None
+            steps = []
+            if dsname:
+                if not lib.exists(dsname):
+                    raise FormError(f"unknown ADS-B dataset {dsname!r}")
+                meta = lib.meta(dsname)
+                if not list(lib.path(dsname).glob("*.parquet")):
+                    raise FormError(f"dataset {dsname} holds no data yet")
+                adsb_path = lib.path(dsname)
+                max_gap = meta.get("max_gap_s")
+                adsb_desc = f"library dataset {dsname}"
+            else:
+                files = [f for f in request.files.getlist("adsb") if f and f.filename]
+                if not files:
+                    raise FormError("choose an ADS-B dataset from the library, or upload a unified .parquet or "
+                                    "tar1090/readsb JSON logs (or a .zip of them)")
+                src = d / "inputs" / "adsb"
+                saved = save_adsb_uploads(files, src)
+                adsb_desc = ", ".join(p.name for p in saved)
+                parquets = sorted(src.glob("*.parquet"))
+                if parquets and len(parquets) == len(list(src.iterdir())):
+                    adsb_path = src
+                else:
+                    adsb_path = d / "inputs" / "adsb.parquet"
         except FormError as e:
             return form_error(str(e), d, job_id)
 
@@ -212,6 +327,8 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                                            "audio": {"start_utc": start}})
         if harmonics:
             over["score"]["harmonics"] = harmonics
+        if max_gap:
+            over["track"] = {"max_gap_s": float(max_gap)}
         if dem:
             over["elevation"] = {"dem_path": dem}
         elif elev is not None:
@@ -220,13 +337,9 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             cfgp = write_config(d, over)
         except (KeyError, ValueError) as e:
             return form_error(f"configuration error: {e}", d, job_id)
-        parquets = sorted(src.glob("*.parquet"))
-        steps = []
-        if parquets and len(parquets) == len(list(src.iterdir())):
-            adsb_path = src
-        else:
-            adsb_path = d / "inputs" / "adsb.parquet"
-            steps.append({"argv": ["--config", str(cfgp), "ingest-adsb", "--src", str(src), "--out", str(adsb_path)]})
+        if not dsname and adsb_path.suffix == ".parquet":
+            steps.append({"argv": ["--config", str(cfgp), "ingest-adsb", "--src", str(d / "inputs" / "adsb"),
+                                   "--out", str(adsb_path)]})
         argv = ["--config", str(cfgp), "locate", "--audio", str(audio), "--region",
                 f"center={lat},{lon},radius_km={radius}", "--adsb", str(adsb_path), "--out", str(d / "out")]
         if ev:
@@ -234,12 +347,257 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         if tlat is not None:
             argv += ["--truth-latlon", f"{tlat},{tlon}"]
         steps.append({"argv": argv})
-        params = {"audio": audio.name, "adsb_files": [p.name for p in saved], "center": [lat, lon],
-                  "radius_km": radius, "start_utc": start, "events": ev, "truth": [tlat, tlon] if tlat is not None else None,
+        params = {"audio": audio.name, "adsb": adsb_desc, "center": [lat, lon], "radius_km": radius,
+                  "start_utc": start, "events": ev, "truth": [tlat, tlon] if tlat is not None else None,
                   "refine_levels": refine, "dt_sweep_s": dt_sweep, "harmonics": harmonics}
         jobs._update(job_id, title=f"Locate: {audio.name}", params=params)
         jobs.submit(job_id, steps)
         return redirect(url_for("job_page", job_id=job_id))
+
+    # ------------------------------------------------------------------ recordings (browser microphone)
+    @app.post("/recordings")
+    def upload_recording():
+        fs = request.files.get("audio")
+        if fs is None:
+            return jsonify({"error": "no audio"}), 400
+        start = request.form.get("start_utc", "").strip()
+        try:
+            t0 = float(start)
+        except ValueError:
+            return jsonify({"error": "start_utc must be unix seconds"}), 400
+        stamp = dt.datetime.fromtimestamp(t0, dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        label = secure_filename(request.form.get("label", "").strip())[:40]
+        name = f"rec-{stamp}{'-' + label if label else ''}.wav"
+        p = rec_dir / name
+        fs.save(p)
+        head = p.read_bytes()[:4]
+        if head != b"RIFF":
+            p.unlink()
+            return jsonify({"error": "not a WAV file"}), 400
+        import soundfile as sf
+
+        info = sf.info(str(p))
+        meta = {"start_utc": t0, "start_iso": dt.datetime.fromtimestamp(t0, dt.timezone.utc).isoformat(),
+                "duration_s": info.duration, "sr": info.samplerate, "device": request.form.get("device", "")[:120],
+                "label": request.form.get("label", "")[:120], "source": "browser microphone",
+                "processing": "echoCancellation/noiseSuppression/autoGainControl requested off",
+                "clock": "browser Date.now() at the first captured sample"}
+        p.with_suffix(".json").write_text(json.dumps(meta, indent=1))
+        return jsonify({"name": name, **meta})
+
+    @app.post("/recordings/import")
+    def import_recording():
+        """Audio or video file -> recordings library (audio extracted with ffmpeg, time from metadata)."""
+        from ..audio import extract_audio, media_info
+
+        fs = request.files.get("media")
+        tmp = rec_dir / ".incoming"
+        try:
+            if fs is None or not fs.filename:
+                raise FormError("choose a video or audio file")
+            src = save_upload(fs, tmp, MEDIA_EXT)
+        except FormError as err:
+            return page(str(err), "record", 400)
+        try:
+            info = media_info(src)
+            if not info["has_audio"]:
+                raise FormError(f"{src.name} has no audio track")
+            override = request.form.get("start_utc", "").strip()
+            t0, source = info["start_utc"], info["time_source"]
+            if override:
+                from ..cli import parse_time
+
+                try:
+                    t0, source = parse_time(override), "entered by you"
+                except ValueError as e:
+                    raise FormError(str(e)) from None
+            elif t0 is not None and request.form.get("time_is_end") == "yes" and info["duration_s"]:
+                t0, source = t0 - info["duration_s"], f"{source} (recording end) minus duration"
+            stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(src.name).stem).strip("-.")[:50] or "video"
+            stamp = (dt.datetime.fromtimestamp(t0, dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") if t0 is not None
+                     else time.strftime("import%Y%m%dT%H%M%S"))
+            name = f"rec-{stamp}-{stem}.wav"
+            out = extract_audio(src, rec_dir / name, int(cfg_preview["audio"]["target_sr"]))
+            import soundfile as sf
+
+            meta = {"start_utc": t0, "start_iso": (dt.datetime.fromtimestamp(t0, dt.timezone.utc).isoformat()
+                                                   if t0 is not None else None),
+                    "time_source": source or "none found — enter the start time in Locate", "duration_s": sf.info(str(out)).duration,
+                    "sr": sf.info(str(out)).samplerate, "source": f"imported from {src.name}",
+                    "label": request.form.get("label", "")[:120],
+                    "note": "phone video audio is AAC-compressed and often high-passed; very low engine tones may be weak"}
+            out.with_suffix(".json").write_text(json.dumps(meta, indent=1))
+        except FormError as err:
+            return page(str(err), "record", 400)
+        except RuntimeError as err:
+            return page(str(err), "record", 400)
+        finally:
+            src.unlink(missing_ok=True)
+        return redirect(url_for("index", tab="record"))
+
+    @app.get("/recordings/<name>")
+    def get_recording(name):
+        try:
+            p = recording_path(name)
+        except FormError:
+            abort(404)
+        return send_file(p, mimetype="audio/wav", as_attachment=request.args.get("download") is not None)
+
+    @app.post("/recordings/<name>/delete")
+    def delete_recording(name):
+        try:
+            p = recording_path(name)
+        except FormError:
+            abort(404)
+        p.unlink()
+        p.with_suffix(".json").unlink(missing_ok=True)
+        return redirect(url_for("index", tab="record"))
+
+    # ------------------------------------------------------------------ ADS-B data library
+    def ds_name(default_prefix: str) -> str:
+        name = request.form.get("dataset_name", "").strip() or default_prefix
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")
+        if not sources.NAME_RE.match(name):
+            raise FormError("dataset names use letters, digits, '.', '_' and '-'")
+        return name
+
+    @app.post("/data/rehydrate")
+    def data_rehydrate():
+        try:
+            day = dt.date.fromisoformat(request.form.get("date", "").strip())
+            end_raw = request.form.get("end_date", "").strip()
+            end = dt.date.fromisoformat(end_raw) if end_raw else day
+        except ValueError:
+            return page("dates must be YYYY-MM-DD", "data", 400)
+        try:
+            if end < day:
+                raise FormError("the end date is before the start date")
+            if (end - day).days > 31:
+                raise FormError("at most 31 days per request (each day is a ~3.5 GB download)")
+            if end >= dt.datetime.now(dt.timezone.utc).date():
+                raise FormError("the archive only has complete past UTC days (published about a day later)")
+            s, w, n, e = (fnum(k, lo, hi) for k, lo, hi in (("south", -90, 90), ("west", -180, 180),
+                                                             ("north", -90, 90), ("east", -180, 180)))
+            if not (s < n and w < e):
+                raise FormError("the bounding box needs south < north and west < east")
+            if (n - s) * (e - w) > 400:
+                raise FormError("bounding box larger than 400 square degrees; narrow it")
+            region = re.sub(r"[^A-Za-z0-9]+", "-", request.form.get("region_label", "").strip()).strip("-").lower()
+            name = ds_name(f"adsblol-{region or f'{s:.1f}_{w:.1f}_{n:.1f}_{e:.1f}'}")
+            subscribe = request.form.get("subscribe") == "yes"
+            if lib.exists(name):
+                m = lib.meta(name)
+                if m.get("kind") != "archive" or [round(v, 4) for v in m.get("request_bbox", [])] != \
+                        [round(v, 4) for v in (s, w, n, e)]:
+                    raise FormError(f"dataset {name} exists with a different source or box; pick another name")
+                if subscribe and not m.get("subscribe"):
+                    lib.update_meta(name, subscribe=True, since=m.get("since") or day.isoformat())
+        except FormError as err:
+            return page(str(err), "data", 400)
+        if not lib.exists(name):
+            lib.create(name, {"source": "adsb.lol archive (ODbL 1.0)", "kind": "archive", "request_bbox": [s, w, n, e],
+                              "region": request.form.get("region_label", "").strip() or None, "days": [],
+                              "subscribe": subscribe, "since": day.isoformat(), "max_gap_s": 120.0,
+                              "license": "ODbL 1.0 — attribute adsb.lol; share derived databases alike"})
+        job_id = enqueue_archive_day(name, day.isoformat(), end.isoformat())
+        if subscribe:
+            sched.queued.update((name, (day + dt.timedelta(days=k)).isoformat()) for k in range((end - day).days + 1))
+        return redirect(url_for("job_page", job_id=job_id))
+
+    @app.post("/data/<name>/subscribe")
+    def data_subscribe(name):
+        if not lib.exists(name) or lib.meta(name).get("kind") != "archive":
+            abort(404)
+        on = request.form.get("on") == "yes"
+        lib.update_meta(name, subscribe=on)
+        return redirect(url_for("index", tab="data"))
+
+    @app.post("/data/import")
+    def data_import():
+        files = [f for f in request.files.getlist("adsb") if f and f.filename]
+        try:
+            if not files:
+                raise FormError("choose receiver log files (or a .zip) to import")
+            name = ds_name(f"import-{time.strftime('%Y%m%d-%H%M%S')}")
+            if lib.exists(name):
+                raise FormError(f"dataset {name} already exists")
+        except FormError as err:
+            return page(str(err), "data", 400)
+        job_id, d = jobs.new_job("import", f"Import ADS-B logs → {name}", {"dataset": name})
+        try:
+            save_adsb_uploads(files, d / "inputs" / "adsb")
+        except FormError as err:
+            import shutil
+
+            shutil.rmtree(d, ignore_errors=True)
+            return page(str(err), "data", 400)
+        lib.create(name, {"source": "imported receiver logs", "kind": "import", "max_gap_s": 30.0})
+        cfgp = write_config(d, {})
+        jobs.submit(job_id, [{"argv": ["--config", str(cfgp), "ingest-adsb", "--src", str(d / "inputs" / "adsb"),
+                                       "--out", str(lib.path(name) / "part-import.parquet")]}])
+        return redirect(url_for("job_page", job_id=job_id))
+
+    @app.post("/data/collect/start")
+    def collect_start():
+        src = request.form.get("source", "")
+        try:
+            kw = {"interval_s": fnum("interval_s", 1, 3600, required=False, default=1.0), "flush_s": 30.0}
+            if src == "receiver":
+                url = request.form.get("url", "").strip()
+                if not re.match(r"^https?://", url):
+                    raise FormError("receiver URL must start with http:// or https://")
+                kw["url"] = url
+                default = "receiver-" + dt.date.today().isoformat()
+            elif src in sources.POINT_APIS:
+                kw.update(lat=fnum("lat", -90, 90), lon=fnum("lon", -180, 180),
+                          radius_nm=fnum("radius_nm", 1, 250, required=False, default=25.0))
+                default = f"{src.replace('.', '')}-{dt.date.today().isoformat()}"
+            else:
+                raise FormError("choose a source")
+            name = ds_name(default)
+            collectors.start(name, src, **kw)
+        except (FormError, ValueError) as err:
+            return page(str(err), "data", 400)
+        return redirect(url_for("index", tab="data"))
+
+    @app.post("/data/collect/<name>/stop")
+    def collect_stop(name):
+        collectors.stop(name)
+        return redirect(url_for("index", tab="data"))
+
+    @app.get("/data/status.json")
+    def data_status():
+        return jsonify({"collectors": collectors.statuses()})
+
+    @app.post("/data/<name>/delete")
+    def data_delete(name):
+        try:
+            if name in collectors.active and collectors.active[name].is_alive():
+                raise FormError("stop the collector first")
+            lib.delete(name)
+        except (FormError, ValueError, FileNotFoundError) as err:
+            return page(str(err), "data", 400)
+        return redirect(url_for("index", tab="data"))
+
+    @app.get("/data/<name>/tracks.json")
+    def data_tracks(name):
+        """Thinned per-aircraft polylines for previewing a dataset on the map."""
+        if not lib.exists(name):
+            abort(404)
+        from .. import adsb
+
+        df = adsb.read_table(lib.path(name))
+        feats = []
+        for (icao, fid), g in df.groupby(["icao24", "flight_id"]):
+            g = g.sort_values("time")
+            step = max(1, len(g) // 200)
+            g = g.iloc[::step]
+            feats.append({"type": "Feature", "properties": {"icao24": icao, "type_code": g["type_code"].iloc[0]
+                                                              if pd.notna(g["type_code"].iloc[0]) else None},
+                          "geometry": {"type": "LineString", "coordinates": g[["lon", "lat"]].round(5).values.tolist()}})
+            if len(feats) >= 3000:
+                break
+        return jsonify({"type": "FeatureCollection", "features": feats})
 
     # ------------------------------------------------------------------ job views
     def get_job(job_id):
@@ -255,7 +613,8 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             rel = run.relative_to(d).as_posix()
             item = {"rel": rel, "name": run.relative_to(d / "out").as_posix() or "run",
                     "images": [p.name for p in sorted(run.glob("*.png"))],
-                    "csvs": [p.name for p in sorted(run.glob("*.csv"))], "top": None, "truth_err": None}
+                    "csvs": [p.name for p in sorted(run.glob("*.csv"))], "top": None, "truth_err": None,
+                    "has_map": (run / "map.json").exists()}
             bp = run / "best_per_combination.csv"
             if bp.exists():
                 b = pd.read_csv(bp)
@@ -297,13 +656,16 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         if not run.is_relative_to(d.resolve()) or not (run / "candidates.csv").exists():
             abort(404)
         pts = pd.read_csv(run / "candidates.csv").head(int(request.args.get("limit", 6000)))
-        truth = None
-        txt = (run / "report.md").read_text() if (run / "report.md").exists() else ""
-        if "- true observer: " in txt:
-            a, b = txt.split("- true observer: ")[1].split("\n")[0].split(", ")
-            truth = [float(a), float(b)]
+        mp = run / "map.json"
+        extra = json.loads(mp.read_text()) if mp.exists() else {}
+        truth = extra.get("truth")
+        if truth is None:
+            txt = (run / "report.md").read_text() if (run / "report.md").exists() else ""
+            if "- true observer: " in txt:
+                a, b = txt.split("- true observer: ")[1].split("\n")[0].split(", ")
+                truth = {"lat": float(a), "lon": float(b)}
         return jsonify({"points": pts[["lat", "lon", "score", "combo", "rank"]].to_dict(orient="list"),
-                        "truth": truth})
+                        "truth": truth, "tracks": extra.get("tracks"), "region": extra.get("region")})
 
     @app.get("/jobs/<job_id>/files/<path:relpath>")
     def job_file(job_id, relpath):
@@ -328,14 +690,10 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 if (d / name).exists():
                     z.write(d / name, name)
         buf.seek(0)
-        from flask import send_file
-
         return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=f"dopplergeo-{job_id}.zip")
 
     @app.template_filter("ts")
     def ts(v):
-        import datetime as dt
-
         if not v:
             return "—"
         return dt.datetime.fromtimestamp(v, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -344,14 +702,15 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     def dur(j):
         if not j.get("started"):
             return "—"
-        import time
-
         end = j.get("finished") or time.time()
         s = int(end - j["started"])
         return f"{s // 60} min {s % 60} s" if s >= 60 else f"{s} s"
 
-    @app.template_filter("tojson_pretty")
-    def tojson_pretty(v):
-        return json.dumps(v, indent=1, default=str)
+    @app.template_filter("secs")
+    def secs(v):
+        v = float(v or 0)
+        return f"{int(v // 60)}:{int(v % 60):02d}"
 
+    if scheduler:
+        sched.start()  # last: the enqueue callback needs every helper above
     return app

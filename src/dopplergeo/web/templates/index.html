@@ -3,38 +3,56 @@
 {% block body %}
 <section class="hero">
   <h1>Locate a recording from aircraft Doppler curves</h1>
-  <p>Upload your own recording and your ADS-B receiver logs. The engine tones of passing propeller aircraft are matched
-  against their flight tracks to estimate where the recording was made.</p>
+  <p>Record or upload your own audio, pick ADS-B data for the same time, and the engine tones of passing
+  propeller aircraft are matched against their flight tracks to estimate where the recording was made.</p>
 </section>
 
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
 
 <div class="tabs" role="tablist">
-  <button role="tab" data-tab="locate" class="{{ 'on' if tab == 'locate' }}">Locate</button>
-  <button role="tab" data-tab="measure" class="{{ 'on' if tab == 'measure' }}">Measure flyovers</button>
-  <button role="tab" data-tab="synth" class="{{ 'on' if tab == 'synth' }}">Synthetic demo</button>
+  {% for key, label in [('locate','Locate'),('record','Record'),('data','ADS-B data'),('measure','Measure'),('synth','Synthetic demo')] %}
+  <button role="tab" type="button" data-tab="{{ key }}" class="{{ 'on' if tab == key }}">{{ label }}</button>
+  {% endfor %}
 </div>
 
+{# ------------------------------------------------------------------ LOCATE #}
 <form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data">
   <input type="hidden" name="tab" value="locate">
   <div class="grid2">
-    <label>Recording <small>WAV, FLAC, MP3…</small>
-      <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff" required></label>
-    <label>ADS-B data <small>unified .parquet, or tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code> files, or a .zip of them</small>
-      <input type="file" name="adsb" multiple accept=".parquet,.json,.jsonl,.gz,.zip" required></label>
+    <fieldset class="flat">
+      <legend>Recording</legend>
+      <label>From your recordings
+        <select name="recording" data-toggles="audio-upload">
+          <option value="">— upload a file instead —</option>
+          {% for r in recordings %}<option value="{{ r.name }}" data-start="{{ r.start_utc or '' }}" {{ 'selected' if form.recording == r.name }}>{{ r.name }} · {{ r.duration_s|secs if r.duration_s else '' }}</option>{% endfor %}
+        </select></label>
+      <label class="audio-upload">or upload <small>audio (WAV, FLAC, MP3, M4A) or video (MOV, MP4…); a video's recording time is read from its metadata</small>
+        <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff,.mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,audio/*,video/*"></label>
+    </fieldset>
+    <fieldset class="flat">
+      <legend>ADS-B data</legend>
+      <label>From the data library
+        <select name="dataset" data-toggles="adsb-upload">
+          <option value="">— upload files instead —</option>
+          {% for m in datasets if m.rows %}<option value="{{ m.name }}" {{ 'selected' if form.dataset == m.name }}>{{ m.name }} · {{ m.flights }} aircraft · {{ m.t_min|ts }}</option>{% endfor %}
+        </select></label>
+      <label class="adsb-upload">or upload <small>unified .parquet, tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code>, or a .zip</small>
+        <input type="file" name="adsb" multiple accept=".parquet,.json,.jsonl,.gz,.zip"></label>
+    </fieldset>
   </div>
   <fieldset>
-    <legend>Search region</legend>
+    <legend>Search region <small>click the map to set the centre</small></legend>
+    <div class="pickmap" data-lat="center_lat" data-lon="center_lon" data-radius-km="radius_km"></div>
     <div class="grid3">
-      <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" placeholder="39.3764" required></label>
-      <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" placeholder="-87.5697" required></label>
+      <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" required></label>
+      <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" required></label>
       <label>Radius (km) <input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
     </div>
   </fieldset>
   <fieldset>
     <legend>Recording details <small>optional</small></legend>
     <div class="grid3">
-      <label>Start time (UTC) <input name="start_utc" value="{{ form.start_utc }}" placeholder="2026-11-20T14:03:12Z"></label>
+      <label>Start time (UTC) <small>filled from your recordings</small><input name="start_utc" value="{{ form.start_utc }}" placeholder="2026-11-20T14:03:12Z"></label>
       <label>Ground elevation (m MSL) <input name="elevation_m" inputmode="decimal" value="{{ form.elevation_m }}" placeholder="{{ cfg.elevation.constant_m }}"></label>
       <label>DEM GeoTIFF path on this machine <input name="dem_path" value="{{ form.dem_path }}" placeholder="data/dem/mosaic.tif"></label>
       <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
@@ -56,17 +74,156 @@
   <button class="primary" type="submit">Run locate</button>
 </form>
 
+{# ------------------------------------------------------------------ RECORD #}
+<section class="card panel {{ 'on' if tab == 'record' }}" data-panel="record" id="recorder">
+  <p class="muted">Records from this computer's microphone with echo cancellation, noise suppression and automatic gain
+  switched off (they would erase the low engine tones). The start time comes from this computer's clock, so keep it
+  synced. Recordings are saved on this machine and appear in the Locate and Measure forms.</p>
+  <div class="grid3">
+    <label>Microphone <select id="rec-device"><option value="">default microphone</option></select></label>
+    <label>Label <small>optional</small><input id="rec-label" maxlength="40" placeholder="backyard"></label>
+    <div class="recctl">
+      <button class="primary" type="button" id="rec-start">● Record</button>
+      <button class="secondary" type="button" id="rec-stop" disabled>■ Stop &amp; save</button>
+    </div>
+  </div>
+  <div class="recstatus"><span id="rec-time">0:00</span><span class="meter"><span id="rec-level"></span></span><span id="rec-msg" class="muted"></span></div>
+  <div class="specwrap">
+    <canvas id="rec-spec" width="900" height="220" aria-label="Live spectrogram, 0 to 500 Hz"></canvas>
+    <span style="bottom:20%">100 Hz</span><span style="bottom:40%">200 Hz</span><span style="bottom:60%">300 Hz</span><span style="bottom:80%">400 Hz</span>
+  </div>
+  <p class="muted small">Live spectrogram, 0–500 Hz, about the last 90 s, newest on the right. A passing prop engine shows as a line that
+  slides down in pitch over a minute or so.</p>
+  <form method="post" action="{{ url_for('import_recording') }}" enctype="multipart/form-data" class="sub">
+    <input type="hidden" name="tab" value="record">
+    <h3>Import a video or audio file</h3>
+    <p class="muted small">The audio track is extracted (bundled ffmpeg) into your recordings. The start time is read from the file's
+      metadata (iPhone: exact local time with offset; many Android phones: <code>creation_time</code>, sometimes the moment recording
+      <em>stopped</em>). Check it, or enter it yourself.</p>
+    <div class="grid3">
+      <label>File <input type="file" name="media" required accept=".mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,.mts,.wav,.flac,.mp3,.m4a,.ogg,video/*,audio/*"></label>
+      <label>Start time (UTC) <small>optional override</small><input name="start_utc" placeholder="from metadata"></label>
+      <label>Label <small>optional</small><input name="label" maxlength="40"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="time_is_end" value="yes"><span>The metadata time marks the <em>end</em> of the recording (subtract its length)</span></label>
+    <button class="primary" type="submit">Import</button>
+  </form>
+  <h2>Your recordings</h2>
+  {% if recordings %}
+  <table class="recs">
+    <thead><tr><th>Recording</th><th>Start (UTC)</th><th>Length</th><th></th></tr></thead>
+    <tbody>{% for r in recordings %}
+      <tr><td><span class="mono small">{{ r.name }}</span><br><audio controls preload="none" src="{{ url_for('get_recording', name=r.name) }}"></audio></td>
+        <td>{{ r.start_utc|ts if r.start_utc else '—' }}{% if r.time_source %}<br><span class="small muted">{{ r.time_source }}</span>{% endif %}</td><td>{{ r.duration_s|secs if r.duration_s else '—' }}</td>
+        <td class="actions"><button type="button" class="link use-rec" data-name="{{ r.name }}">Use in Locate</button>
+          <a href="{{ url_for('get_recording', name=r.name) }}?download">Download</a>
+          <form method="post" action="{{ url_for('delete_recording', name=r.name) }}" onsubmit="return confirm('Delete {{ r.name }}?')"><button class="link danger">Delete</button></form></td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="muted">No recordings yet.</p>{% endif %}
+</section>
+
+{# ------------------------------------------------------------------ DATA #}
+<section class="card panel {{ 'on' if tab == 'data' }}" data-panel="data">
+  <h2>Data library</h2>
+  {% if datasets %}
+  <table class="datasets">
+    <thead><tr><th>Dataset</th><th>Source</th><th>Covers (UTC)</th><th>Aircraft</th><th>Rows</th><th></th></tr></thead>
+    <tbody>{% for m in datasets %}
+      <tr><td class="mono small">{{ m.name }}{% if m.collecting %} <span class="state running">collecting</span>{% endif %}</td>
+        <td>{{ m.source }}{% if m.kind == 'archive' %}<br><span class="small muted">{{ (m.days or [])|length }} day(s){% if m.region %} · {{ m.region }}{% endif %}</span>
+          <form method="post" action="{{ url_for('data_subscribe', name=m.name) }}" class="inline"><input type="hidden" name="on" value="{{ '' if m.subscribe else 'yes' }}">
+            <button class="link small">{{ 'daily updates on — turn off' if m.subscribe else 'turn on daily updates' }}</button></form>{% endif %}</td><td class="small">{{ m.t_min|ts }}<br>{{ m.t_max|ts }}</td><td>{{ m.flights }}</td><td>{{ m.rows }}</td>
+        <td class="actions">{% if m.rows %}<button type="button" class="link preview-ds" data-name="{{ m.name }}">Show on map</button>{% endif %}
+          {% if m.collecting %}<form method="post" action="{{ url_for('collect_stop', name=m.name) }}"><button class="link">Stop</button></form>
+          {% else %}<form method="post" action="{{ url_for('data_delete', name=m.name) }}" onsubmit="return confirm('Delete dataset {{ m.name }}?')"><button class="link danger">Delete</button></form>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="muted">No datasets yet. Rehydrate a past day, start a live collector, or import receiver logs below.</p>{% endif %}
+  {% if datasets|selectattr('subscribe')|list %}<p class="small muted">Daily updates: {{ 'checking hourly' if sched.alive else 'stopped' }}{% if sched.last_check %}, last check {{ sched.last_check|ts }}{% endif %}{% if sched.last_error %} — last error: {{ sched.last_error }}{% endif %}</p>{% endif %}
+  <div class="datamap" id="datamap"></div>
+  <p class="muted small" id="datamap-note">Pan and zoom to an area; “Use map view” copies it into the forms below.</p>
+
+  <div class="grid2 dataforms">
+    <form method="post" action="{{ url_for('data_rehydrate') }}" class="sub">
+      <input type="hidden" name="tab" value="data">
+      <h3>Rehydrate a past day</h3>
+      <p class="muted small">From the <a href="https://www.adsb.lol/docs/open-data/historical/" rel="noreferrer">adsb.lol open archive</a>
+        (ODbL 1.0, all aircraft, one release per UTC day, published about a day later). The whole day (≈3.5 GB) is
+        streamed and only aircraft inside the box are kept. Archive tracks are thinned (a point every ~20 s in straight flight).</p>
+      <label>Area
+        <select id="region-preset"><option value="">— custom box (or use the map view) —</option></select></label>
+      <input type="hidden" name="region_label" value="{{ form.region_label }}">
+      <div class="grid2 tight">
+        <label>South <input name="south" inputmode="decimal" value="{{ form.south }}" required></label>
+        <label>North <input name="north" inputmode="decimal" value="{{ form.north }}" required></label>
+        <label>West <input name="west" inputmode="decimal" value="{{ form.west }}" required></label>
+        <label>East <input name="east" inputmode="decimal" value="{{ form.east }}" required></label>
+      </div>
+      <button type="button" class="secondary use-view" data-target="bbox">Use map view</button>
+      <div class="grid2 tight">
+        <label>From (UTC day) <input type="date" name="date" value="{{ form.date or yesterday }}" max="{{ yesterday }}" required></label>
+        <label>To <small>optional</small><input type="date" name="end_date" value="{{ form.end_date }}" max="{{ yesterday }}"></label>
+      </div>
+      <label class="check"><input type="checkbox" name="subscribe" value="yes" {{ 'checked' if form.subscribe == 'yes' }}>
+        <span>Keep updated: fetch each new day automatically as it is published (checked hourly while this server runs)</span></label>
+      <label>Dataset name <small>optional</small><input name="dataset_name" value="{{ form.dataset_name }}"></label>
+      <button class="primary" type="submit">Rehydrate</button>
+    </form>
+
+    <form method="post" action="{{ url_for('collect_start') }}" class="sub">
+      <input type="hidden" name="tab" value="data">
+      <h3>Collect live, ongoing</h3>
+      <label>Source
+        <select name="source" id="col-source">
+          <option value="receiver">My ADS-B receiver (tar1090 / readsb aircraft.json)</option>
+          <option value="adsb.lol">adsb.lol point API (shares the area with adsb.lol)</option>
+          <option value="airplanes.live">airplanes.live point API (non-commercial; shares the area)</option>
+        </select></label>
+      <label class="col-receiver">aircraft.json URL <input name="url" value="{{ form.url }}" placeholder="http://adsb.local/tar1090/data/aircraft.json"></label>
+      <div class="grid3 tight col-point" hidden>
+        <label>Latitude <input name="lat" inputmode="decimal" value="{{ form.lat }}"></label>
+        <label>Longitude <input name="lon" inputmode="decimal" value="{{ form.lon }}"></label>
+        <label>Radius (nm) <input name="radius_nm" inputmode="decimal" value="{{ form.radius_nm or '25' }}"></label>
+      </div>
+      <button type="button" class="secondary use-view col-point" data-target="center" hidden>Use map centre</button>
+      <label>Poll every (s) <small>receiver 1 s; adsb.lol ≥ 5 s; airplanes.live ≥ 1 s</small><input name="interval_s" inputmode="decimal" value="{{ form.interval_s or '1' }}"></label>
+      <label>Dataset name <small>optional</small><input name="dataset_name" value=""></label>
+      <button class="primary" type="submit">Start collecting</button>
+      <p class="muted small">Runs while this server runs and appends to the dataset every 30 s. Start it before you record.</p>
+    </form>
+  </div>
+
+  <form method="post" action="{{ url_for('data_import') }}" enctype="multipart/form-data" class="sub">
+    <input type="hidden" name="tab" value="data">
+    <h3>Import receiver logs</h3>
+    <div class="grid2">
+      <label>Files <small>tar1090 <code>history_*.json</code>, readsb <code>aircraft.json</code> snapshots, .jsonl, .parquet, or a .zip</small>
+        <input type="file" name="adsb" multiple accept=".parquet,.json,.jsonl,.gz,.zip" required></label>
+      <label>Dataset name <small>optional</small><input name="dataset_name" value=""></label>
+    </div>
+    <button class="primary" type="submit">Import</button>
+  </form>
+</section>
+
+{# ------------------------------------------------------------------ MEASURE #}
 <form class="card panel {{ 'on' if tab == 'measure' }}" data-panel="measure" method="post" action="{{ url_for('submit_measure') }}" enctype="multipart/form-data">
   <input type="hidden" name="tab" value="measure">
   <p class="muted">Detects flyovers and fits each Doppler curve (f0, speed, closest distance, time of closest approach). No ADS-B needed.</p>
   <div class="grid2">
-    <label>Recording <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff" required></label>
+    <label>From your recordings
+      <select name="recording" data-toggles="audio-upload-m">
+        <option value="">— upload a file instead —</option>
+        {% for r in recordings %}<option value="{{ r.name }}">{{ r.name }}</option>{% endfor %}
+      </select></label>
+    <label class="audio-upload-m">or upload <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff,.mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,audio/*,video/*"></label>
     <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
   </div>
   {% include "_attest.html" %}
   <button class="primary" type="submit">Run measure</button>
 </form>
 
+{# ------------------------------------------------------------------ SYNTH #}
 <form class="card panel {{ 'on' if tab == 'synth' }}" data-panel="synth" method="post" action="{{ url_for('submit_synth') }}">
   <input type="hidden" name="tab" value="synth">
   <p class="muted">Generates a synthetic flyover (known location) and runs the full pipeline on it. About 15 s per seed.</p>
@@ -89,4 +246,7 @@
   </table>
   {% else %}<p class="muted">No jobs yet.</p>{% endif %}
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='record.js') }}"></script>
 {% endblock %}

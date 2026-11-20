@@ -5,6 +5,7 @@ import argparse
 import datetime as dt
 import logging
 import shlex
+import time
 import sys
 from pathlib import Path
 
@@ -144,8 +145,23 @@ def cmd_locate(args, cfg) -> int:
     att = require_authorization(cfg, args.attest_authorized)
     c = config.speed_of_sound(cfg)
     center, radius = parse_region(args.region)
-    df = adsb.read_table(args.adsb)
     start = parse_time(cfg["audio"]["start_utc"])
+    # read only what the search can use: region + audible radius (+margin), and the recording's hours
+    pad_m = radius + float(cfg["grid"]["audible_radius_m"]) + 30000.0
+    dlat = pad_m / 111_000.0
+    dlon = pad_m / (111_000.0 * max(0.1, np.cos(np.radians(center[0]))))
+    bbox = (center[0] - dlat, center[1] - dlon, center[0] + dlat, center[1] + dlon)
+    t_range = None
+    if start is not None:
+        from . import audio as _audio
+
+        dur = _audio.media_info(args.audio)["duration_s"] or 6 * 3600.0
+        tol = float(cfg["locate"]["time_tolerance_s"])
+        t_range = (start - tol - 3600.0, start + dur + tol + 3600.0)
+    df = adsb.read_table(args.adsb, float(cfg["adsb"]["flight_gap_s"]), bbox=bbox, t_range=t_range)
+    log.info("ADS-B rows in the search window: %d (%d aircraft)", len(df), df["icao24"].nunique())
+    if df.empty:
+        raise SystemExit("no ADS-B data in the search region/time window: check the dataset covers the recording")
     truth = None
     if args.truth_latlon:
         la, lo = (float(v) for v in args.truth_latlon.split(","))
@@ -175,12 +191,86 @@ def cmd_locate_area(args, cfg) -> int:
              "after Phase A passes on an operator-supplied recording.")
 
 
+def cmd_fetch_adsblol(args, cfg) -> int:
+    import json as _json
+
+    from . import sources
+
+    s, w, n, e = (float(v) for v in args.bbox.split(","))
+    if not (s < n and w < e):
+        raise SystemExit("--bbox must be S,W,N,E with S<N and W<E")
+    d0 = dt.date.fromisoformat(args.date)
+    d1 = dt.date.fromisoformat(args.end_date) if args.end_date else d0
+    if d1 < d0:
+        raise SystemExit("--end-date is before --date")
+    out = Path(args.out)
+    last = {"t": 0.0}
+
+    def progress(done, total):
+        if time.time() - last["t"] > 5:
+            last["t"] = time.time()
+            log.info("downloaded %.2f / %.2f GB", done / 1e9, total / 1e9)
+
+    total = 0
+    day = d0
+    while day <= d1:
+        stats = sources.fetch_adsblol_day(day, (s, w, n, e), out, progress=progress,
+                                          gap_s=float(cfg["adsb"]["flight_gap_s"]))
+        total += stats["rows_out"]
+        print(yaml.safe_dump({"out": str(out), **stats}, sort_keys=False))
+        meta = out / "meta.json"
+        if meta.exists():  # a library dataset: record the day and refresh its summary
+            m = _json.loads(meta.read_text())
+            m["days"] = sorted(set(m.get("days", [])) | {day.isoformat()})
+            meta.write_text(_json.dumps(m, indent=1))
+            sources.Library(out.parent).refresh(out.name)
+        day += dt.timedelta(days=1)
+    return 0 if total else 1
+
+
+def cmd_extract_audio(args, cfg) -> int:
+    from . import audio
+
+    info = audio.media_info(args.video)
+    if not info["has_audio"]:
+        raise SystemExit(f"{args.video} has no audio stream")
+    out = audio.extract_audio(args.video, args.out, int(cfg["audio"]["target_sr"]))
+    print(yaml.safe_dump({"out": str(out), **info}, sort_keys=False))
+    return 0
+
+
+def cmd_collect(args, cfg) -> int:
+    from . import sources
+
+    lib = sources.Library(args.library)
+    mgr = sources.CollectorManager(lib, cfg)
+    kw = {"interval_s": args.interval, "flush_s": args.flush}
+    if args.source == "receiver":
+        kw["url"] = args.url
+    else:
+        lat, lon = (float(v) for v in args.center.split(","))
+        kw.update(lat=lat, lon=lon, radius_nm=args.radius_nm)
+    c = mgr.start(args.dataset, args.source, **kw)
+    print(f"collecting {c.url} -> {lib.path(args.dataset)} (Ctrl-C to stop)")
+    try:
+        while c.is_alive():
+            time.sleep(10)
+            st = c.status
+            log.info("polls=%d errors=%d written=%d buffered=%d last_error=%s", st["polls"], st["errors"],
+                     st["rows_written"], st["rows_buffered"], st["last_error"])
+    except KeyboardInterrupt:
+        pass
+    mgr.stop_all()
+    print(yaml.safe_dump(lib.meta(args.dataset), sort_keys=False))
+    return 0
+
+
 def cmd_serve(args, cfg) -> int:
     from .web import create_app
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning("serving on %s: anyone who can reach this address can upload audio and see results", args.host)
-    app = create_app(args.jobs_dir, args.config, args.max_upload_mb)
+    app = create_app(args.jobs_dir, args.config, args.max_upload_mb, args.library_dir, args.recordings_dir)
     print(f"dopplergeo web interface: http://{args.host}:{args.port}/  (jobs in {args.jobs_dir})")
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
     return 0
@@ -222,11 +312,33 @@ def main(argv=None) -> int:
             s.add_argument("--adsb", required=True)
             s.add_argument("--out", required=True)
 
+    s = sub.add_parser("fetch-adsblol", help="rehydrate one day from the adsb.lol open archive (ODbL), bbox-filtered")
+    s.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
+    s.add_argument("--end-date", help="last UTC day of a range (inclusive)")
+    s.add_argument("--bbox", required=True, help="S,W,N,E degrees (Florida: 24.4,-87.7,31.1,-79.9)")
+    s.add_argument("--out", required=True, help="output directory (a library dataset dir, or any folder)")
+
+    s = sub.add_parser("extract-audio", help="video (MOV/MP4/...) -> mono WAV; prints recording time from metadata")
+    s.add_argument("--video", required=True)
+    s.add_argument("--out", required=True)
+
+    s = sub.add_parser("collect", help="ongoing collection from a receiver or a point API into the library")
+    s.add_argument("--source", choices=["receiver", "adsb.lol", "airplanes.live"], required=True)
+    s.add_argument("--url", help="receiver aircraft.json URL, e.g. http://adsb.local/tar1090/data/aircraft.json")
+    s.add_argument("--center", help="LAT,LON for point APIs")
+    s.add_argument("--radius-nm", type=float, default=25.0)
+    s.add_argument("--dataset", required=True)
+    s.add_argument("--library", default="data/adsb/library")
+    s.add_argument("--interval", type=float, default=1.0)
+    s.add_argument("--flush", type=float, default=30.0)
+
     s = sub.add_parser("serve", help="local web interface")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--jobs-dir", default="data/out/web")
     s.add_argument("--max-upload-mb", type=int, default=4096)
+    s.add_argument("--library-dir", default="data/adsb/library", help="ADS-B dataset library")
+    s.add_argument("--recordings-dir", default="data/audio/recordings", help="microphone recordings")
 
     args = p.parse_args(argv)
     args.command_line = "dopplergeo " + " ".join(shlex.quote(a) for a in argv)
@@ -234,7 +346,9 @@ def main(argv=None) -> int:
     cfg = config.load_config(args.config)
     np.seterr(invalid="ignore")
     return {"synth-demo": cmd_synth_demo, "ingest-adsb": cmd_ingest, "measure": cmd_measure, "locate": cmd_locate,
-            "locate-area": cmd_locate_area, "serve": cmd_serve}[args.cmd](args, cfg)
+            "locate-area": cmd_locate_area, "serve": cmd_serve,
+            "fetch-adsblol": cmd_fetch_adsblol, "collect": cmd_collect,
+            "extract-audio": cmd_extract_audio}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

@@ -13,3 +13,4 @@ pytest
 pyyaml
 flask
 markdown
+imageio-ffmpeg

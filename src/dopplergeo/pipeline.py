@@ -321,11 +321,26 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
                             f"f0={f0_i:.2f} Hz dt={dt_i:+.2f} s", tt, th, (rg.times[good], rg.freq[good]))
         plots.append((f"event {i + 1} overlay (true vs modeled curve)", fn))
     txy = []
+    feats = []
+    best_keys = {nm.split("/", 1)[1] for nm in str(top["combo"]).split("+")}
     for tr in {t.key: t for t in tracks}.values():
         x_, y_ = filters.track_xy(tr, proj)
         near = np.hypot(x_, y_) < radius_m + float(cfg["grid"]["audible_radius_m"]) * 1.5
         if near.any():
             txy.append((tr.icao24, (x_[near], y_[near])))
+            idx = np.where(near)[0][::3]
+            feats.append({"type": "Feature", "properties": {
+                "icao24": tr.icao24, "key": tr.key, "type_code": tr.type_code, "in_best": tr.key in best_keys,
+                "t0": float(tr.t[idx[0]]), "t1": float(tr.t[idx[-1]])},
+                "geometry": {"type": "LineString",
+                             "coordinates": [[round(float(tr.lon[i]), 6), round(float(tr.lat[i]), 6)] for i in idx]}})
+    import json as _json
+
+    (out / "map.json").write_text(_json.dumps({
+        "tracks": {"type": "FeatureCollection", "features": feats},
+        "region": {"lat": center[0], "lon": center[1], "radius_m": radius_m},
+        "best": {"lat": float(top["lat"]), "lon": float(top["lon"]), "combo": str(top["combo"])},
+        "truth": ({"lat": truth_out["lat"], "lon": truth_out["lon"]} if truth_out else None)}))
     truth_xy = (truth_out["x"], truth_out["y"]) if truth_out else None
     report.plot_heatmap(pts, txy, out / "heatmap.png", truth_xy, "summed-brightness score (all scored points)")
     report.plot_zoom(pts, out / "heatmap_zoom.png", truth_xy)

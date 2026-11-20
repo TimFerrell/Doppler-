@@ -45,8 +45,9 @@
   </div>
   {% endif %}
   <div class="mapwrap">
-    <svg class="map" data-src="{{ url_for('job_candidates', job_id=job.id, run=r.rel) }}" role="img" aria-label="Candidate locations coloured by score"></svg>
-    <div class="maplegend"><span class="ramp"></span> low → high score · <span class="best">◯</span> best · <span class="truth">★</span> known location · grid north up</div>
+    <div class="resultmap" data-src="{{ url_for('job_candidates', job_id=job.id, run=r.rel) }}" role="img" aria-label="Candidate locations on a US map"></div>
+    <div class="maplegend"><span class="ramp"></span> candidate score, low → high · <span class="best">◯</span> best ·
+      <span class="truth">★</span> known location · <span class="trk best-trk">━</span> flights used · <span class="trk">━</span> other flights · dashed circle: search region</div>
   </div>
   <div class="gallery">
     {% for img in r.images %}

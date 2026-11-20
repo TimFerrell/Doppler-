@@ -225,13 +225,38 @@ def write_parquet(df: pd.DataFrame, path: str | Path) -> None:
     validate(df).to_parquet(path, index=False)
 
 
-def read_table(path: str | Path) -> pd.DataFrame:
+def read_table(path: str | Path, flight_gap_s: float = 1800.0, bbox=None, t_range=None) -> pd.DataFrame:
+    """Unified parquet file, or a directory of part files (flight ids are re-derived across parts).
+
+    ``bbox`` (S, W, N, E) and ``t_range`` (t0, t1) are pushed down into the parquet scan, so a
+    state-sized multi-day dataset can be read for one small region without loading all of it.
+    """
     p = Path(path)
-    if p.suffix == ".parquet" or p.is_dir():
-        if p.is_dir():
-            return validate(pd.concat([pd.read_parquet(f) for f in sorted(p.glob("*.parquet"))]), str(p))
-        return validate(pd.read_parquet(p), str(p))
-    raise ADSBError(f"expected a unified parquet file/dir, got {p} (run `dopplergeo ingest-adsb` first)")
+    if not (p.suffix == ".parquet" or p.is_dir()):
+        raise ADSBError(f"expected a unified parquet file/dir, got {p} (run `dopplergeo ingest-adsb` first)")
+    files = sorted(p.glob("*.parquet")) if p.is_dir() else [p]
+    if not files:
+        raise ADSBError(f"no parquet files in {p}")
+    import pyarrow.dataset as ds
+
+    dset = ds.dataset([str(f) for f in files], format="parquet")
+    missing = [c for c in REQUIRED if c not in dset.schema.names]
+    if missing:
+        raise ADSBError(f"{p}: missing required column(s) {missing}; have {dset.schema.names}")
+    flt = None
+    if bbox is not None:
+        s, w, n, e = bbox
+        flt = (ds.field("lat") >= s) & (ds.field("lat") <= n) & (ds.field("lon") >= w) & (ds.field("lon") <= e)
+    if t_range is not None:
+        ft = (ds.field("time") >= float(t_range[0])) & (ds.field("time") <= float(t_range[1]))
+        flt = ft if flt is None else flt & ft
+    df = dset.to_table(filter=flt).to_pandas()
+    df = validate(df, str(p))
+    if len(files) > 1 or bbox is not None or t_range is not None:
+        df["_k"] = np.round(df["time"].to_numpy(float), 1)
+        df = df.drop_duplicates(["icao24", "_k"]).drop(columns="_k")
+        df = coerce(assign_flight_ids(df, flight_gap_s))
+    return df
 
 
 # --------------------------------------------------------------------------- tracks
