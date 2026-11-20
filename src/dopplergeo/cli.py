@@ -122,15 +122,39 @@ def cmd_measure(args, cfg) -> int:
     from . import audio, measure
 
     att = require_authorization(cfg, args.attest_authorized)
+    from . import report
+    from .live import LiveFeed
+
     c = config.speed_of_sound(cfg)
+    live = LiveFeed(Path(args.out).parent if args.out else None)  # animated view on the job page
+    live.emit("start", title="analyse")
+    live.emit("stage", stage="audio")
     x, sr = audio.load_audio(args.audio, int(cfg["audio"]["target_sr"]))
     spec = audio.spectrogram_from_config(x, sr, cfg)
+    high = audio.high_spectrogram_from_config(x, sr, cfg)
+    if args.out:
+        live.spectrogram(spec, cfg, Path(args.out).parent, high)
+    live.emit("stage", stage="detect")
+    snr = float(cfg["measure"]["min_column_snr_db"])
+    live.ridge(measure.extract_ridge(spec, tuple(cfg["detect"]["band_hz"])), snr)
+    if high is not None and cfg["detect"].get("jet_band_hz"):
+        live.ridge(measure.extract_ridge(high, tuple(cfg["detect"]["jet_band_hz"])), snr + 3, band="jet")
     ev = _events_arg(args, cfg)
     diag = None
     if ev == "auto":
-        meas, diag = measure.detect_events(spec, cfg, c)
+        meas, diag = measure.detect_all(spec, high, cfg, c)
     else:
-        meas = [measure.fit_event(spec, cfg, c, t, manual=True) for t in ev]
+        meas = [measure.fit_manual(spec, high, cfg, c, t) for t in ev]
+    if diag:
+        live.emit("rejected", items=diag.get("rejected", []))
+    good = [m for m in meas if m.success]
+    for i, m in enumerate(good):
+        live.flyover(i, m, c)
+    if not good:
+        live.emit("expected", **report.expected_overlays(spec, cfg, diag, c))
+    live.emit("analysed", found=len(good))
+    live.emit("done")
+    live.close()
     doc = {"audio": str(args.audio), "sha256": audio.sha256(args.audio), "attestation": att,
            "speed_of_sound": c, "detector": diag, "events": [m.to_dict() for m in meas]}
     text = yaml.safe_dump(doc, sort_keys=False)
@@ -138,7 +162,7 @@ def cmd_measure(args, cfg) -> int:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(text)
     print(text)
-    return 0 if meas and all(m.success for m in meas) else 1
+    return 0  # 'no aircraft found' is a result, not a failure
 
 
 def cmd_locate(args, cfg) -> int:

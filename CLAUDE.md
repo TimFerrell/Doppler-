@@ -36,13 +36,15 @@ Real adsb.lol tags look like `v2026.11.19-planes-readsb-prod-0`. Releases appear
 the covered UTC day. Each day is one ~3.6 GB world download (2 parts), whatever bbox you keep.
 
 ## Web UI tabs
-Top steps: 1 get flight data, 2 record, 3 locate, 4 read the result. Tabs: **3 · Locate**,
-**2 · Record** (browser mic, video import), **1 · Flight data** (library, rehydrate incl. "Whole
-world", live collect, import), **Measure**, **Synthetic demo**. Job pages show stage progress and a
+Top steps: 1 get flight data, 2 record, 3 locate, 4 read the result. Tabs: **3 · Locate** (step 1
+*Analyse recording* -> job page lists aircraft heard -> step 2 search form only if some were found;
+one-go form folded below), **2 · Record** (browser mic, live view, video import), **1 · Flight data**
+(library, rehydrate incl. "Whole world", add days, live collect, import), **Synthetic demo**.
+Jets are searched too (jet-tone band 300–3000 Hz, own 4096-sample spectrogram, tracked ridge). Job pages show stage progress and a
 "What this means" explanation. No login: LAN only.
 
 ## Tests
-`python -m pytest -q tests`: offline, about 1–2 min, 59 tests at the time of writing. Phase-0 check:
+`python -m pytest -q tests`: offline, about 1–2 min, 61 tests at the time of writing. Phase-0 check:
 `dopplergeo synth-demo --out /tmp/s --seeds 1` should print "seed 1: #1 error 55.8 m".
 
 ## Library data rules

@@ -246,3 +246,32 @@ def test_download_missing_days_then_run(client, tmp_path, monkeypatch):
     assert "2026-10-25" in lib.meta("us")["days"]  # the missing day was downloaded into the dataset
     assert s_["state"] == "failed" and "waited for" not in (s_["error"] or "")  # then the analysis itself ran
     assert "flyover" in (s_["error"] or "")  # (silent test audio: it stops at 'no flyover found')
+
+
+def test_analyse_first_then_locate_step(client, tmp_path):
+    """Step 1 analyses the recording; the search form appears only if aircraft were found."""
+    import numpy as np
+    import soundfile as sf
+
+    from dopplergeo import config as cfgmod, synth
+
+    c, _ = client
+    cfg = cfgmod.load_config()
+    synth.make_phase0_fixture(tmp_path / "fx", 1, cfg, 343.0)
+    data = (tmp_path / "fx" / "audio.wav").read_bytes()
+    r = c.post("/jobs/analyse", data={"attest": "yes", "audio": (io.BytesIO(data), "flyover.wav"),
+                                      "start_utc": "2024-08-26T16:05:10Z"}, content_type="multipart/form-data")
+    assert r.status_code == 302
+    jid = r.headers["Location"].rstrip("/").split("/")[-1]
+    assert _wait(c, jid)["state"] == "done"
+    page = c.get(f"/jobs/{jid}").get_data(as_text=True)
+    assert "Step 2: find where it was recorded" in page and "propeller" in page and 'name="reuse_job"' in page
+    assert c.get(f"/jobs/{jid}/live.json").get_json()["events"]  # animated spectrogram feed
+    wav = io.BytesIO()
+    sf.write(wav, np.random.default_rng(0).normal(0, 0.05, 16000 * 30).astype(np.float32), 16000, format="WAV")
+    r = c.post("/jobs/analyse", data={"attest": "yes", "audio": (io.BytesIO(wav.getvalue()), "quiet.wav")},
+               content_type="multipart/form-data")
+    jid2 = r.headers["Location"].rstrip("/").split("/")[-1]
+    assert _wait(c, jid2)["state"] == "done"
+    page2 = c.get(f"/jobs/{jid2}").get_data(as_text=True)
+    assert "No aircraft found" in page2 and "Step 2" not in page2

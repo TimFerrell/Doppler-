@@ -305,24 +305,28 @@ def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, 
     return p
 
 
-def write_stopped_report(out_dir, spec, cfg, meas, c, reason, inputs, attestation, title) -> Path:
+def write_stopped_report(out_dir, spec, cfg, meas, c, reason, inputs, attestation, title, high=None) -> Path:
     """Report for a run that heard flyovers but could not continue (e.g. no flight data for that time)."""
     from .model import straight_line_curve
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    sel = (spec.freqs >= 40) & (spec.freqs <= 420)
+    from .audio import log_display
+
+    img, f_lo, f_hi = log_display(spec, high)
     fig, ax = plt.subplots(figsize=(11, 5), dpi=110)
-    S = spec.db[sel]
-    vmin, vmax = np.percentile(S, [5, 99.7])
-    ax.imshow(S, origin="lower", aspect="auto", cmap="magma", vmin=vmin, vmax=vmax,
-              extent=[spec.times[0], spec.times[-1], spec.freqs[sel][0], spec.freqs[sel][-1]])
+    ax.pcolormesh(np.linspace(spec.times[0], spec.times[-1], img.shape[1] + 1), np.geomspace(f_lo, f_hi, img.shape[0] + 1),
+                  img, cmap="magma", shading="flat", rasterized=True)
+    ax.set_yscale("log")
+    ax.set_yticks([v for v in (50, 100, 200, 300, 500, 1000, 2000, 3000) if f_lo <= v <= f_hi])
+    ax.get_yaxis().set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
     for k, m in enumerate(meas, 1):
         if not np.isfinite(m.f0):
             continue
         tt = np.linspace(m.t_lo, m.t_hi, 300)
         ax.plot(tt, straight_line_curve(tt, m.f0, m.v, m.d, m.t_cpa, c), "-", color="#7CFC9A", lw=2,
-                label=f"plane {k}: closest at {m.t_cpa_heard:.1f} s, ~{m.v:.0f} m/s, ~{m.d / 1000:.1f} km")
+                label=f"{'jet' if m.is_high else 'plane'} {k}: closest at {m.t_cpa_heard:.1f} s, ~{m.v:.0f} m/s, "
+                      f"~{m.d / 1000:.1f} km")
         ax.plot([m.t_cpa_heard], [m.f0], "o", color="white", ms=7, mfc="none", mew=2)
     ax.set_xlabel("seconds into the recording")
     ax.set_ylabel("Hz")

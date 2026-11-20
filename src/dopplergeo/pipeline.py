@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 class Event:
     meas: Measurement
     scorer: EventScorer
+    spec: Spectrogram | None = None  # the spectrogram (prop or jet band) this flyover was measured in
 
 
 @dataclass
@@ -49,8 +50,13 @@ class StageLog:
         return _T()
 
 
-def make_events(spec: Spectrogram, meas: list[Measurement], cfg: dict) -> list[Event]:
-    return [Event(m, EventScorer(spec, m.t_lo, m.t_hi, cfg, m.f0)) for m in meas]
+def make_events(spec: Spectrogram, meas: list[Measurement], cfg: dict, high: Spectrogram | None = None) -> list[Event]:
+    """Scorers on the spectrogram each flyover was measured in (jet-band flyovers use ``high``)."""
+    out = []
+    for m in meas:
+        sp = high if (high is not None and m.is_high) else spec
+        out.append(Event(m, EventScorer(sp, m.t_lo, m.t_hi, cfg, m.f0), sp))
+    return out
 
 
 # ----------------------------------------------------------------------------- scoring
@@ -316,9 +322,13 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
     with slog.timer("audio+spectrogram"):
         x, sr = audiomod.load_audio(audio_path, int(cfg["audio"]["target_sr"]))
         spec = audiomod.spectrogram_from_config(x, sr, cfg)
-    live.spectrogram(spec, cfg, out)
+        high = audiomod.high_spectrogram_from_config(x, sr, cfg)  # jet engine tones
+    live.spectrogram(spec, cfg, out, high)
     live.emit("stage", stage="detect")
-    live.ridge(measure.extract_ridge(spec, tuple(cfg["detect"]["band_hz"])), float(cfg["measure"]["min_column_snr_db"]))
+    snr = float(cfg["measure"]["min_column_snr_db"])
+    live.ridge(measure.extract_ridge(spec, tuple(cfg["detect"]["band_hz"])), snr)
+    if high is not None and cfg["detect"].get("jet_band_hz"):
+        live.ridge(measure.extract_ridge(high, tuple(cfg["detect"]["jet_band_hz"])), snr + 3, band="jet")
     slog.count("spectrogram", f"{len(x) / sr:.1f} s audio", f"{spec.db.shape[1]} cols x {spec.db.shape[0]} bins")
 
     detect_diag = None
@@ -326,9 +336,9 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
         if events_spec == "whole":
             meas = [measure.fit_curve(spec, cfg, c)[0]]
         elif events_spec == "auto":
-            meas, detect_diag = measure.detect_events(spec, cfg, c)
+            meas, detect_diag = measure.detect_all(spec, high, cfg, c)
         else:
-            meas = [measure.fit_event(spec, cfg, c, float(t), manual=True) for t in events_spec]
+            meas = [measure.fit_manual(spec, high, cfg, c, float(t)) for t in events_spec]
     bad = [i + 1 for i, m in enumerate(meas) if not m.success]
     slog.count("events", "-", len(meas), f"failed fits: {bad}" if bad else "all fits ok")
     if detect_diag:
@@ -346,13 +356,13 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
             raise RuntimeError("no plane flyover was found in the recording; see the report for what was heard and "
                                "why each part was rejected (or give flyover times explicitly)")
         raise RuntimeError(f"curve fit failed for event(s) {bad}: {[meas[i - 1].to_dict() for i in bad]}")
-    events = make_events(spec, meas, cfg)
+    events = make_events(spec, meas, cfg, high)
     if no_data_reason or adsb_df.empty:
         from . import report as _report
 
         reason = no_data_reason or "No flight data in the search window."
         live.emit("nodata", reason=reason)
-        _report.write_stopped_report(out, spec, cfg, meas, c, reason, inputs, attestation, title)
+        _report.write_stopped_report(out, spec, cfg, meas, c, reason, inputs, attestation, title, high)
         raise RuntimeError(reason)
 
     live.emit("stage", stage="flights")
@@ -411,10 +421,10 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
         tt = th = None
         if truth is not None and truth.get("curves"):
             tt, th = truth["curves"][i]
-        rg = measure.extract_ridge(spec, tuple(cfg["measure"]["band_hz"]), ev.meas.t_lo, ev.meas.t_hi)
+        rg = measure.extract_ridge(ev.spec or spec, tuple(ev.meas.band or cfg["measure"]["band_hz"]), ev.meas.t_lo, ev.meas.t_hi)
         good = rg.snr_db >= cfg["measure"]["min_column_snr_db"]
         fn = f"overlay_e{i + 1}.png"
-        report.plot_overlay(spec, ev, t_rel, curve, out / fn, f"event {i + 1}: {combo_tracks[i].icao24} "
+        report.plot_overlay(ev.spec or spec, ev, t_rel, curve, out / fn, f"event {i + 1}: {combo_tracks[i].icao24} "
                             f"f0={f0_i:.2f} Hz dt={dt_i:+.2f} s", tt, th, (rg.times[good], rg.freq[good]))
         plots.append((f"event {i + 1} overlay (true vs modeled curve)", fn))
     txy = []

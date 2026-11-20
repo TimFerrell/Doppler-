@@ -47,6 +47,10 @@ DEFAULTS: dict[str, Any] = {
         "pad_factor": 4,  # zero-padding factor of the FFT (frequency interpolation only)
         "fmin_hz": 5.0,
         "fmax_hz": 800.0,
+        "high_fmax_hz": 3000.0,  # second spectrogram for jet tones (fan whine, buzz-saw), 300 Hz .. this
+        "high_fmin_hz": 250.0,
+        "high_pad_factor": 2,
+        "high_window": 4096,  # shorter window: jet tones move ~10 Hz/s near the closest point
     },
     "measure": {
         "band_hz": [80.0, 300.0],
@@ -54,7 +58,7 @@ DEFAULTS: dict[str, Any] = {
         "fit_window_s": 90.0,
         "loss": "soft_l1",
         "f_scale_hz": 1.0,
-        "v_bounds_mps": [20.0, 250.0],
+        "v_bounds_mps": [20.0, 320.0],
         "d_bounds_m": [100.0, 30000.0],
         "max_rms_hz": 2.0,
     },
@@ -68,6 +72,8 @@ DEFAULTS: dict[str, Any] = {
         "min_inlier_frac": 0.6,
         "merge_s": 20.0,
         "manual_times_s": None,  # e.g. [61.5, 981.0]: overrides auto-detection
+        "jet_band_hz": [300.0, 3000.0],  # jet engine tones are searched here too ([] disables)
+        "jet_min_spread_hz": 15.0,
     },
     "score": {
         "dt_sweep_s": 3.0,
@@ -94,7 +100,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "adsb": {
         "jet_types_csv": "data/icao_jet_types.csv",
-        "drop_jets": True,
+        "drop_jets": False,  # jets are searched too; true restores props-only
         "flight_gap_s": 1800.0,
         "max_seen_pos_s": 15.0,
         "on_missing_velocity": "error",  # error | drop

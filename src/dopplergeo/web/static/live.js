@@ -17,7 +17,7 @@
                 !!new URLSearchParams(location.search).get('replay');
   const queue = [];
   let busyUntil = 0;
-  const S = {spec: null, img: null, reveal: 0, ridge: null, ridgeBorn: 0, flyovers: [], rejected: [], scanning: false,
+  const S = {spec: null, img: null, reveal: 0, ridges: [], flyovers: [], rejected: [], scanning: false,
              expected: null};
 
   // ------------------------------------------------------------------ stage chips + ticker + counters
@@ -64,7 +64,9 @@
   const X = t => { const d = window.devicePixelRatio || 1, w = cv.width - (PAD.l + PAD.r) * d;
     return PAD.l * d + (t - S.spec.t0) / (S.spec.t1 - S.spec.t0) * w; };
   const Y = f => { const d = window.devicePixelRatio || 1, h = cv.height - (PAD.t + PAD.b) * d;
-    return PAD.t * d + (1 - (f - S.spec.f0) / (S.spec.f1 - S.spec.f0)) * h; };
+    const q = S.spec.scale === 'log' ? Math.log(Math.max(f, 1) / S.spec.f0) / Math.log(S.spec.f1 / S.spec.f0)
+                                     : (f - S.spec.f0) / (S.spec.f1 - S.spec.f0);
+    return PAD.t * d + (1 - q) * h; };
 
   function drawSpec() {
     const d = window.devicePixelRatio || 1;
@@ -87,8 +89,10 @@
     }
     // axes
     g.fillStyle = 'rgba(255,255,255,.55)'; g.font = `${11 * d}px system-ui`; g.textAlign = 'right';
-    for (let f = Math.ceil(S.spec.f0 / 50) * 50; f <= S.spec.f1; f += 50) {
-      g.fillText(f + ' Hz', x0 - 6 * d, Y(f) + 4 * d);
+    const ticks = S.spec.scale === 'log' ? [50, 100, 200, 300, 500, 1000, 2000, 3000].filter(f => f >= S.spec.f0 && f <= S.spec.f1)
+      : Array.from({length: 20}, (_, k) => (Math.ceil(S.spec.f0 / 50) + k) * 50).filter(f => f <= S.spec.f1);
+    for (const f of ticks) {
+      g.fillText((f >= 1000 ? f / 1000 + 'k' : f) + ' Hz', x0 - 6 * d, Y(f) + 4 * d);
       g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(x0, Y(f), w, 1); g.fillStyle = 'rgba(255,255,255,.55)';
     }
     g.textAlign = 'center';
@@ -109,10 +113,11 @@
       g.fillRect(X(r.window_s[0]), y0, X(r.window_s[1]) - X(r.window_s[0]), h);
     }
     // tone points
-    if (S.ridge) {
-      const n = S.ridge.t.length, k = animate ? ease((now() - S.ridgeBorn) / 1600) : 1;
-      g.fillStyle = 'rgba(95,211,255,.85)'; g.shadowColor = 'rgba(95,211,255,.8)'; g.shadowBlur = 6 * d;
-      for (let i = 0; i < n * k; i++) { g.beginPath(); g.arc(X(S.ridge.t[i]), Y(S.ridge.f[i]), 1.6 * d, 0, 6.3); g.fill(); }
+    for (const R of S.ridges) {
+      const n = R.t.length, k = animate ? ease((now() - R.born) / 1600) : 1;
+      const col = R.band === 'jet' ? '255,190,90' : '95,211,255';
+      g.fillStyle = `rgba(${col},.85)`; g.shadowColor = `rgba(${col},.8)`; g.shadowBlur = 6 * d;
+      for (let i = 0; i < n * k; i++) { g.beginPath(); g.arc(X(R.t[i]), Y(R.f[i]), 1.6 * d, 0, 6.3); g.fill(); }
       g.shadowBlur = 0;
     }
     // fitted flyover curves
@@ -131,7 +136,7 @@
         g.beginPath(); g.arc(cx, cy, (6 + 18 * ph) * d, 0, 6.3); g.stroke();
         g.fillStyle = '#fff'; g.beginPath(); g.arc(cx, cy, 4 * d, 0, 6.3); g.fill();
         g.fillStyle = 'rgba(255,255,255,.92)'; g.font = `600 ${12 * d}px system-ui`; g.textAlign = 'left';
-        g.fillText(`Plane ${idx + 1} · closest at ${fo.t_cpa.toFixed(1)} s`, Math.min(cx + 12 * d, cv.width - 190 * d), cy - 12 * d);
+        g.fillText(`${fo.kind === 'jet' ? 'Jet' : 'Plane'} ${idx + 1} · closest at ${fo.t_cpa.toFixed(1)} s`, Math.min(cx + 12 * d, cv.width - 190 * d), cy - 12 * d);
       }
     });
     // what was expected (shown when no flyover was found)
@@ -179,7 +184,8 @@
   requestAnimationFrame(drawSpec);
 
   // ------------------------------------------------------------------ map + animated heat cells
-  const map = USMap.create($('lv-map'));
+  const mapEl = $('lv-map');
+  const map = mapEl ? USMap.create(mapEl) : null;  // analyse jobs have no map
   const svg = L.svg({padding: 0.5});
   let region = null, bestMk = null, truth = null, scoreMin = Infinity, scoreMax = -Infinity, cellStep = 200;
   const trackLayers = {};
@@ -223,7 +229,7 @@
     },
     onRemove(m) { m.off('moveend zoomend resize viewreset', this._reset, this); this._c.remove(); this._m = null; },
   });
-  const heat = new Heat().addTo(map);
+  const heat = map ? new Heat().addTo(map) : null;
 
   function growCircle(lat, lon, radius) {
     if (region) region.remove();
@@ -276,9 +282,15 @@
       return 1200;
     },
     ridge(e) {
-      S.ridge = e; S.ridgeBorn = now();
-      tick(`Strongest tone traced at ${fmtInt(e.t.length)} moments`);
+      S.ridges.push({...e, born: now()});
+      tick(e.band === 'jet' ? `Jet-engine band: clear tone at ${fmtInt(e.t.length)} moments`
+                            : `Propeller band: clear tone at ${fmtInt(e.t.length)} moments`);
       return 1300;
+    },
+    analysed(e) {
+      tick(e.found ? `<b>${e.found} aircraft pass${e.found === 1 ? '' : 'es'} found</b>: choose where to search below`
+                   : '<b>No aircraft found</b>: no search area needed', e.found ? 'good' : 'warn');
+      return 0;
     },
     rejected(e) {
       e.items.forEach((r, i) => S.rejected.push({...r, born: now() + i * 120}));
@@ -289,7 +301,7 @@
       S.scanning = false;
       S.flyovers.push({...e, born: now()});
       $('lv-speccap').textContent = `${S.flyovers.length} flyover${S.flyovers.length > 1 ? 's' : ''} found`;
-      tick(`<b>Plane ${e.i + 1}</b>: ~${Math.round(e.v)} m/s, closest ~${(e.d / 1000).toFixed(1)} km, engine ${e.f0.toFixed(1)} Hz`, 'good');
+      tick(`<b>${e.kind === 'jet' ? 'Jet' : 'Propeller plane'} ${e.i + 1}</b>: ~${Math.round(e.v)} m/s, closest ~${(e.d / 1000).toFixed(1)} km, engine tone ${e.f0.toFixed(1)} Hz`, 'good');
       return 1500;
     },
     expected(e) {

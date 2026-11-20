@@ -196,3 +196,41 @@ def spectrogram_from_config(x: np.ndarray, sr: int, cfg: dict) -> Spectrogram:
     sp.brightness_mode = cfg["score"]["brightness"]
     sp.brightness_clip = cfg["score"]["brightness_clip"]
     return sp
+
+
+def high_spectrogram_from_config(x: np.ndarray, sr: int, cfg: dict) -> Spectrogram | None:
+    """Second, higher band (jet engine tones). None if disabled or above Nyquist."""
+    s = cfg["spectrogram"]
+    if not cfg["detect"].get("jet_band_hz"):
+        return None
+    f1 = min(float(s["high_fmax_hz"]), sr / 2 - 50)
+    if f1 <= float(s["high_fmin_hz"]) + 50:
+        return None
+    w = int(s["high_window"])
+    sp = spectrogram(x, sr, w, w // int(s["hop_divisor"]), float(s["high_fmin_hz"]), f1, int(s["high_pad_factor"]))
+    sp.brightness_mode = cfg["score"]["brightness"]
+    sp.brightness_clip = cfg["score"]["brightness_clip"]
+    return sp
+
+
+def log_display(low: Spectrogram, high: Spectrogram | None, f_lo: float = 40.0, f_hi: float = 3000.0,
+                rows: int = 420, max_cols: int = 3000) -> tuple[np.ndarray, float, float]:
+    """Spectrogram resampled to log-spaced frequency rows (prop hums and jet whines on one picture).
+
+    Each row is normalised to its own median (frequency response flattened) before display scaling.
+    Returns (image 0..1 [rows, cols] with row 0 = lowest frequency, f_lo, f_hi actually covered).
+    """
+    f_hi = min(f_hi, float(high.freqs[-1]) if high is not None else float(low.freqs[-1]))
+    fr = np.geomspace(f_lo, f_hi, rows)
+    cstep = max(1, low.db.shape[1] // max_cols)
+    out = np.empty((rows, low.db[:, ::cstep].shape[1]), np.float32)
+    split = float(low.freqs[-1]) - 50 if high is not None else np.inf
+    for src, sel in ((low, fr < split), (high, fr >= split)):
+        if src is None or not sel.any():
+            continue
+        D = src.db[:, ::cstep]
+        D = D - np.median(D, axis=1, keepdims=True)
+        idx = np.clip(np.searchsorted(src.freqs, fr[sel]), 0, len(src.freqs) - 1)
+        out[sel] = D[idx, :out.shape[1]]
+    lo, hi = np.percentile(out, [8, 99.7])
+    return np.clip((out - lo) / max(1e-6, hi - lo), 0, 1), float(fr[0]), float(fr[-1])

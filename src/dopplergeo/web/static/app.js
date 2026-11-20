@@ -92,7 +92,7 @@
   if (rk && rw) { const f = () => { rw.hidden = !(parseFloat(rk.value) > 50); }; rk.addEventListener('input', f); f(); }
 
   // what the chosen flight dataset covers, with a shortcut to add days
-  const dsSel2 = document.querySelector('form[data-panel=locate] select[name=dataset]');
+  const dsSel2 = document.querySelector('form#locate-form select[name=dataset], form.step2 select[name=dataset]');
   if (dsSel2) {
     const hint = document.createElement('p'); hint.className = 'hint dscover'; dsSel2.closest('label').after(hint);
     const upd = () => {
@@ -108,7 +108,7 @@
 
   // "Use in Locate" from the recordings list
   document.querySelectorAll('.use-rec').forEach(b => b.addEventListener('click', () => {
-    const sel = document.querySelector('form[data-panel=locate] select[name=recording]');
+    const sel = document.querySelector('#analyse-form select[name=recording]');
     sel.value = b.dataset.name; sel.dispatchEvent(new Event('change'));
     showTab('locate'); window.scrollTo({top: 0, behavior: 'smooth'});
   }));

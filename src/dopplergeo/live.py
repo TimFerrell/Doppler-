@@ -36,8 +36,8 @@ class LiveFeed:
             pass
 
     # ------------------------------------------------------------------ helpers
-    def spectrogram(self, spec, cfg, out_dir: Path) -> None:
-        """Save a compact band image (40–400 Hz) for the live view and announce it."""
+    def spectrogram(self, spec, cfg, out_dir: Path, high=None) -> None:
+        """Save a log-frequency display image (40 Hz–3 kHz: prop hums and jet whines) and announce it."""
         if self._fh is None:
             return
         import matplotlib
@@ -45,25 +45,18 @@ class LiveFeed:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        f_lo, f_hi = 40.0, max(400.0, float(cfg["detect"]["band_hz"][1]) + 60.0)
-        sel = (spec.freqs >= f_lo) & (spec.freqs <= f_hi)
-        S = spec.db[sel]
-        step = max(1, S.shape[0] // 360)  # ~360 rows is plenty for display
-        S = S[::step]
-        cstep = max(1, S.shape[1] // 2400)
-        S = S[:, ::cstep]
-        vmin, vmax = np.percentile(S, [8, 99.7])
-        plt.imsave(out_dir / "live_spectrogram.png", np.clip((S - vmin) / max(1e-6, vmax - vmin), 0, 1), cmap="magma",
-                   origin="lower")
-        self.emit("spectrogram", image="live_spectrogram.png", t0=float(spec.times[0]), t1=float(spec.times[-1]),
-                  f0=float(spec.freqs[sel][0]), f1=float(spec.freqs[sel][-1]),
-                  duration=float(spec.times[-1] + spec.window / spec.sr / 2))
+        from .audio import log_display
 
-    def ridge(self, ridge, min_snr: float) -> None:
+        img, f0, f1 = log_display(spec, high)
+        plt.imsave(out_dir / "live_spectrogram.png", img, cmap="magma", origin="lower")
+        self.emit("spectrogram", image="live_spectrogram.png", t0=float(spec.times[0]), t1=float(spec.times[-1]),
+                  f0=f0, f1=f1, scale="log", duration=float(spec.times[-1] + spec.window / spec.sr / 2))
+
+    def ridge(self, ridge, min_snr: float, band: str = "prop") -> None:
         good = ridge.snr_db >= min_snr
         t, f, s = ridge.times[good], ridge.freq[good], ridge.snr_db[good]
         k = max(1, len(t) // 1500)
-        self.emit("ridge", t=np.round(t[::k], 2), f=np.round(f[::k], 2), snr=np.round(s[::k], 1))
+        self.emit("ridge", t=np.round(t[::k], 2), f=np.round(f[::k], 2), snr=np.round(s[::k], 1), band=band)
 
     def flyover(self, i: int, meas, c: float) -> None:
         from .model import straight_line_curve
@@ -71,7 +64,7 @@ class LiveFeed:
         tt = np.linspace(meas.t_lo, meas.t_hi, 240)
         ff = straight_line_curve(tt, meas.f0, meas.v, meas.d, meas.t_cpa, c)
         self.emit("flyover", i=i, t=np.round(tt, 2), f=np.round(ff, 2), t_cpa=meas.t_cpa_heard, f0=meas.f0, v=meas.v,
-                  d=meas.d, rms=meas.rms_hz, t_lo=meas.t_lo, t_hi=meas.t_hi)
+                  d=meas.d, rms=meas.rms_hz, t_lo=meas.t_lo, t_hi=meas.t_hi, kind=("jet" if meas.is_high else "prop"))
 
     def tracks(self, per_event) -> None:
         feats = {}

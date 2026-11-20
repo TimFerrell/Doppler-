@@ -38,6 +38,10 @@ spectrogram:
   pad_factor: 4
   fmin_hz: 5.0
   fmax_hz: 800.0
+  high_fmax_hz: 3000.0
+  high_fmin_hz: 250.0
+  high_pad_factor: 2
+  high_window: 4096
 
 # Stage-0 straight-line (retarded) fit of the per-column ridge maximum
 measure:
@@ -46,7 +50,7 @@ measure:
   fit_window_s: 90.0
   loss: soft_l1
   f_scale_hz: 1.0
-  v_bounds_mps: [20.0, 250.0]
+  v_bounds_mps: [20.0, 320.0]
   d_bounds_m: [100.0, 30000.0]
   max_rms_hz: 2.0
 
@@ -61,6 +65,8 @@ detect:
   min_inlier_frac: 0.6
   merge_s: 20.0
   manual_times_s: null
+  jet_band_hz: [300.0, 3000.0]
+  jet_min_spread_hz: 15.0
 
 # event 1 sweeps dt +-dt_sweep_s and f0 +-df_sweep_hz; events i>1 are time-locked (df only)
 score:
@@ -90,7 +96,7 @@ grid:
 # drop KNOWN jets only (unknown/null type codes are kept); on_missing_velocity: error | drop
 adsb:
   jet_types_csv: data/icao_jet_types.csv
-  drop_jets: true
+  drop_jets: false
   flight_gap_s: 1800.0
   max_seen_pos_s: 15.0
   on_missing_velocity: error

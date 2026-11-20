@@ -22,8 +22,9 @@
       two or more flyovers works best.</p></li>
   <li>
     <button type="button" class="steplink" data-goto="locate"><span class="n">3</span>
-      <span><b>Locate</b><br><small>pick both, set a rough area</small></span></button>
-    <p>Choose the recording and the flight data, mark roughly where to search, and run. A few minutes at most.</p></li>
+      <span><b>Locate</b><br><small>analyse, then search</small></span></button>
+    <p>The tool first listens for aircraft in the recording; if it hears some, you mark roughly where to search and it
+      matches them against the flight data.</p></li>
   <li>
     <span class="steplink static"><span class="n">4</span><span><b>Read the result</b><br><small>in the job page</small></span></span>
     <p>A map of the most likely spots, the flights that matched, and how confident the answer is.</p></li>
@@ -33,13 +34,42 @@
 <div class="note dlbanner" id="dl-banner" hidden></div>
 
 <div class="tabs" role="tablist">
-  {% for key, label in [('locate','3 · Locate'),('record','2 · Record'),('data','1 · Flight data'),('measure','Measure'),('synth','Synthetic demo')] %}
+  {% for key, label in [('locate','3 · Locate'),('record','2 · Record'),('data','1 · Flight data'),('synth','Synthetic demo')] %}
   <button role="tab" type="button" data-tab="{{ key }}" class="{{ 'on' if tab == key }}">{{ label }}</button>
   {% endfor %}
 </div>
 
 {# ------------------------------------------------------------------ LOCATE #}
-<form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data" id="locate-form">
+<section class="card panel {{ 'on' if tab == 'locate' or reuse }}" data-panel="locate">
+<form method="post" action="{{ url_for('submit_analyse') }}" enctype="multipart/form-data" id="analyse-form" {% if reuse %}hidden{% endif %}>
+  <input type="hidden" name="tab" value="locate">
+  <p class="intro"><b>Step 1: let the tool listen.</b> Choose a recording. It finds every aircraft that can be heard in it
+    (propeller planes and jets) and shows you the spectrogram. Only if it finds some does it ask where to search.</p>
+  <div class="grid2">
+    <label>From your recordings
+      <select name="recording" data-toggles="audio-upload-a">
+        <option value="">— upload a file instead —</option>
+        {% for r in recordings %}<option value="{{ r.name }}" data-start="{{ r.start_utc or '' }}" data-dur="{{ r.duration_s or '' }}">{{ r.name }}{% if r.duration_s %} · {{ r.duration_s|secs }}{% endif %}</option>{% endfor %}
+      </select></label>
+    <label class="audio-upload-a">or upload a file
+      <small>Audio (WAV, FLAC, MP3, M4A) or a phone video (MOV, MP4…). A video's recording time is read from its metadata.</small>
+      <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff,.mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,audio/*,video/*"></label>
+  </div>
+  <details><summary>Options</summary>
+    <div class="grid2">
+      <label>When it started (UTC) <small>only if the file has no recording time of its own</small>
+        <input name="start_utc" placeholder="2026-11-18T14:03:12Z"></label>
+      <label>When the planes passed (s into the recording) <small>leave blank to find them automatically</small>
+        <input name="events" placeholder="find automatically"></label>
+    </div>
+  </details>
+  {% include "_attest.html" %}
+  <button class="primary" type="submit">Analyse recording</button>
+</form>
+
+<details class="onego" {% if reuse %}open{% endif %}>
+<summary>Already know roughly where it was recorded? Locate in one go</summary>
+<form method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data" id="locate-form">
   <input type="hidden" name="tab" value="locate">
   {% if reuse %}
   <input type="hidden" name="reuse_job" value="{{ reuse.job }}">
@@ -135,6 +165,8 @@
   <button class="primary" type="submit">Run locate</button>
   <p class="hint">Runs in the background; you'll see its progress and then the result.</p>
 </form>
+</details>
+</section>
 
 {# ------------------------------------------------------------------ RECORD #}
 <section class="card panel {{ 'on' if tab == 'record' }}" data-panel="record" id="recorder">
@@ -297,25 +329,6 @@
     <button class="primary" type="submit">Import</button>
   </form>
 </section>
-
-{# ------------------------------------------------------------------ MEASURE #}
-<form class="card panel {{ 'on' if tab == 'measure' }}" data-panel="measure" method="post" action="{{ url_for('submit_measure') }}" enctype="multipart/form-data">
-  <input type="hidden" name="tab" value="measure">
-  <p class="intro">A quick check of a recording on its own, with no flight data needed: finds each plane passing and estimates its engine
-  pitch, speed, closest distance and the moment it was closest. Useful to see whether a recording has usable flyovers
-  before going further.</p>
-  <div class="grid2">
-    <label>From your recordings
-      <select name="recording" data-toggles="audio-upload-m">
-        <option value="">— upload a file instead —</option>
-        {% for r in recordings %}<option value="{{ r.name }}">{{ r.name }}</option>{% endfor %}
-      </select></label>
-    <label class="audio-upload-m">or upload <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff,.mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,audio/*,video/*"></label>
-    <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
-  </div>
-  {% include "_attest.html" %}
-  <button class="primary" type="submit">Run measure</button>
-</form>
 
 {# ------------------------------------------------------------------ SYNTH #}
 <form class="card panel {{ 'on' if tab == 'synth' }}" data-panel="synth" method="post" action="{{ url_for('submit_synth') }}">

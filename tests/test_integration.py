@@ -104,3 +104,21 @@ def test_no_flight_data_still_shows_what_was_heard(phase0):
     kinds = [e["type"] for e in ev]
     assert "spectrogram" in kinds and "flyover" in kinds and "nodata" in kinds and kinds[-1] == "failed"
     assert (d / "nodata" / "recording_spectrogram.png").exists() and "stopped before the search" in (d / "nodata" / "report.md").read_text()
+
+
+def test_jet_tone_detected_in_high_band(tmp_path):
+    """A jet-like engine tone (1.4 kHz + harmonic) is found in the jet band with the right speed."""
+    from dopplergeo import measure
+
+    cfg = config.load_config(overrides={"adsb": {"jet_types_csv": JETS},
+                                        "synth": {"f0_hz": 1400.0, "snr_db": -16.0, "harmonic_amps": [1.0, 0.5]}})
+    c = config.speed_of_sound(cfg)
+    truth = synth.make_phase0_fixture(tmp_path / "fx", 2, cfg, c)
+    x, sr = audio.load_audio(tmp_path / "fx" / "audio.wav", 16000)
+    events, _ = measure.detect_all(audio.spectrogram_from_config(x, sr, cfg), audio.high_spectrogram_from_config(x, sr, cfg), cfg, c)
+    jets = [m for m in events if m.is_high]
+    assert jets, "jet tone not detected"
+    fl = truth["flights"][0]
+    assert jets[0].f0 == pytest.approx(1400.0, abs=25.0)
+    assert jets[0].v == pytest.approx(fl["speed_mps"], abs=10.0)
+    assert jets[0].t_cpa_heard == pytest.approx(fl["t_heard_abs"] - truth["audio"]["start_unix"], abs=2.0)

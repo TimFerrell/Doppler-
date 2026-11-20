@@ -68,7 +68,7 @@
 </section>
 {% endif %}
 
-{% if job.kind in ('locate', 'measure') and not has_live_spec %}
+{% if job.kind in ('locate', 'measure', 'analyse') and not has_live_spec %}
 <section class="card">
   <h2>Your recording</h2>
   <p class="hint">Spectrogram, 40–500 Hz. A passing prop plane shows as a line that slides down in pitch. Click to play from there.</p>
@@ -76,12 +76,12 @@
 </section>
 {% endif %}
 
-{% if job.kind in ('locate', 'synth') and job.state != 'needs_data' %}
-<section class="card livecard" id="live" data-src="{{ url_for('job_live', job_id=job.id) }}" data-state="{{ job.state }}">
+{% if job.kind in ('locate', 'synth', 'analyse') and job.state != 'needs_data' %}
+<section class="card livecard{{ ' nomap' if job.kind == 'analyse' }}" id="live" data-src="{{ url_for('job_live', job_id=job.id) }}" data-state="{{ job.state }}">
   <div class="livehead">
     <h2>Live analysis</h2>
     <div class="stages" id="lv-stages">
-      <span data-st="audio">Listen</span><span data-st="detect">Find planes</span><span data-st="flights">Load flights</span><span data-st="search">Search</span><span data-st="rank">Answer</span>
+      <span data-st="audio">Listen</span><span data-st="detect">Find planes</span>{% if job.kind != 'analyse' %}<span data-st="flights">Load flights</span><span data-st="search">Search</span><span data-st="rank">Answer</span>{% endif %}
     </div>
     {% if job.state in ('done', 'failed') %}<button type="button" class="secondary" id="lv-replay">▶ Replay</button>{% endif %}
   </div>
@@ -90,14 +90,14 @@
       <canvas id="lv-spec" aria-label="Spectrogram of the recording with the detected flyovers"></canvas>
       <div class="lvcap" id="lv-speccap">Waiting for the recording…</div>
     </div>
-    <div class="lvmap">
+    {% if job.kind != 'analyse' %}<div class="lvmap">
       <div id="lv-map"></div>
       <div class="lvhud">
         <div><span id="lv-scored" class="big">0</span><small>spots scored</small></div>
         <div><span id="lv-combos" class="big">0</span><small>flight sets</small></div>
         <div><span id="lv-best" class="big">—</span><small>best score</small></div>
       </div>
-    </div>
+    </div>{% endif %}
   </div>
   <div class="lvlog" id="lv-log" aria-live="polite"></div>
 </section>
@@ -105,19 +105,71 @@
 
 {% if meas %}
 <section class="card">
-  <h2>Planes heard in the recording</h2>
+  <h2>Aircraft heard in the recording</h2>
   <p class="hint">One row per flyover. “Closest at” is when the plane was nearest (seconds into the recording); the engine tone is
   its pitch without the Doppler shift; speed and closest distance come from the shape of the pitch curve; a small fit error
   (well under 1 Hz) means a clean, usable flyover.</p>
   <table class="num">
-    <thead><tr><th>#</th><th>Closest at (s)</th><th>Engine tone (Hz)</th><th>Speed (m/s)</th><th>Closest distance (m)</th><th>Fit error (Hz)</th><th>Usable</th></tr></thead>
+    <thead><tr><th>#</th><th>Type</th><th>Closest at (s)</th><th>Engine tone (Hz)</th><th>Speed (m/s)</th><th>Closest distance (m)</th><th>Fit error (Hz)</th><th>Usable</th></tr></thead>
     <tbody>{% for e in meas.events %}
-      <tr><td>{{ loop.index }}</td><td>{{ '%.2f'|format(e.t_cpa_heard) }}</td><td>{{ '%.2f'|format(e.f0) }}</td>
+      <tr><td>{{ loop.index }}</td><td>{{ 'jet' if (e.band and e.band[0] >= 250) else 'propeller' }}</td><td>{{ '%.2f'|format(e.t_cpa_heard) }}</td><td>{{ '%.2f'|format(e.f0) }}</td>
         <td>{{ '%.1f'|format(e.v) }}</td><td>{{ '%.0f'|format(e.d) }}</td><td>{{ '%.3f'|format(e.rms_hz) }}</td><td>{{ '✓' if e.success else '✗' }}</td></tr>
     {% endfor %}</tbody>
   </table>
   <p><a href="{{ url_for('job_file', job_id=job.id, relpath='out/measurements.yaml') }}">measurements.yaml</a></p>
 </section>
+{% endif %}
+
+{% if step2 %}
+{% if step2.found %}
+<section class="card step2card">
+  <h2>Step 2: find where it was recorded</h2>
+  <p class="intro">{{ step2.found|length }} aircraft pass{{ '' if step2.found|length == 1 else 'es' }} heard. Now mark roughly where the recording
+    might have been made; the tool will match {{ 'it' if step2.found|length == 1 else 'them' }} against the real flight paths there.</p>
+  <form method="post" action="{{ url_for('submit_locate') }}" class="step2" id="step2-form">
+    <input type="hidden" name="reuse_job" value="{{ job.id }}">
+    <input type="hidden" name="events" value="{{ step2.events }}">
+    <input type="hidden" name="attest" value="yes">
+    <input type="hidden" name="operator" value="{{ job.params.operator or '' }}">
+    <div class="pickmap" data-lat="center_lat" data-lon="center_lon" data-radius-km="radius_km"></div>
+    <div class="grid3">
+      <label>Centre latitude <input name="center_lat" inputmode="decimal" placeholder="click the map" required></label>
+      <label>Centre longitude <input name="center_lon" inputmode="decimal" placeholder="click the map" required></label>
+      <label>Search radius (km) <small>6–10 km is typical; any size is allowed</small><input name="radius_km" inputmode="decimal" value="8" required></label>
+    </div>
+    <div class="grid2">
+      <label>When it started (UTC) <small>{{ 'from ' ~ job.params.time_source if job.params.time_source else 'needed to pick the right flights' }}</small>
+        <input name="start_utc" value="{{ step2.start_iso }}" placeholder="2026-11-18T14:03:12Z"></label>
+      <label>Flight data <small>chosen to cover the recording's time; missing days can be downloaded next</small>
+        <select name="dataset" required>
+          {% for m in datasets if m.rows %}<option value="{{ m.name }}" data-days="{{ (m.days or [])|length }}" data-kind="{{ m.kind }}" data-tmin="{{ m.t_min }}" data-tmax="{{ m.t_max }}" {{ 'selected' if step2.dataset == m.name }}>{{ m.name }} · {{ m.t_min|ts }} → {{ m.t_max|ts }}</option>{% endfor %}
+        </select></label>
+    </div>
+    <details><summary>More options</summary>
+      <div class="grid2">
+        <label>Ground height (m above sea level) <input name="elevation_m" inputmode="decimal" placeholder="unknown"></label>
+        <label>Testing only: the true location <span class="pair"><input name="truth_lat" inputmode="decimal" placeholder="latitude">
+          <input name="truth_lon" inputmode="decimal" placeholder="longitude"></span></label>
+        <label>Finer search steps <input name="refine_levels" inputmode="numeric" value="{{ cfg.grid.refine_levels }}"></label>
+        <label>Clock uncertainty ± seconds <input name="dt_sweep_s" inputmode="decimal" value="{{ cfg.score.dt_sweep_s }}"></label>
+      </div>
+    </details>
+    <button class="primary" type="submit">Find the location</button>
+  </form>
+</section>
+{% else %}
+<section class="card">
+  <h2>No aircraft found</h2>
+  <p>No complete aircraft pass could be heard, so there is nothing to locate yet, and no search area is needed. The spectrogram above
+    shows what a pass would look like (dashed white) and the closest attempts (red).</p>
+  <ul class="hint">
+    <li>Record for longer: about a minute either side of the loudest moment of a flyover.</li>
+    <li>Music, voices, wind and traffic can hide the engine tone: a quiet spot helps.</li>
+    <li>If you can hear a plane, note the time it was loudest and give it under <i>Options → When the planes passed</i>.</li>
+  </ul>
+  <p><a class="button ghost" href="{{ url_for('index', tab='locate') }}">Analyse another recording</a></p>
+</section>
+{% endif %}
 {% endif %}
 
 {% for r in results %}

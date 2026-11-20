@@ -95,7 +95,7 @@ def job_progress(kind: str, state: str, log: str) -> dict:
     elif kind in ("import",):
         step("Read and convert the receiver logs", state == "done",
              detail=(f"{last(r'rows_out: (\d+)')} positions" if last(r"rows_out: (\d+)") else None))
-    elif kind == "measure":
+    elif kind in ("measure", "analyse"):
         step("Load the recording and compute its spectrogram", has(r"detect:") or has(r"^events:"))
         step("Find and measure each flyover", state == "done")
     elif kind == "synth":
@@ -376,7 +376,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     def locate_args(job_id: str) -> tuple[dict, Path, list, dict]:
         """(job, dir, locate argv, raw config) of a past locate job."""
         j, d = jobs.get(job_id), jobs.job_dir(job_id)
-        argv = next(s_["argv"] for s_ in j["steps"] if "locate" in s_["argv"])
+        argv = next(s_["argv"] for s_ in j["steps"] if "locate" in s_["argv"] or "measure" in s_["argv"])
         cfg_raw = yaml.safe_load((d / "config.yaml").read_text()) or {}
         return j, d, argv, cfg_raw
 
@@ -555,6 +555,34 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         jobs.submit(job_id, [{"argv": ["--config", str(cfgp), "synth-demo", "--out", str(d / "out"),
                                        "--seeds", ",".join(map(str, seeds))],
                               "warn": {"1": "at least one seed missed the 150 m target (see the reports)"}}])
+        return redirect(url_for("job_page", job_id=job_id))
+
+    @app.post("/jobs/analyse")
+    def submit_analyse():
+        """Step 1 of locating: find the aircraft in a recording (no search area needed yet)."""
+        job_id, d = jobs.new_job("analyse", "Analyse", {})
+        try:
+            over = attestation()
+            audio, rmeta = audio_input(d)
+            ev = events_field()
+        except FormError as e:
+            return form_error(str(e), d, job_id)
+        if not rmeta.get("start_utc") and request.form.get("start_utc", "").strip():
+            from ..cli import parse_time
+
+            try:
+                rmeta = {"start_utc": parse_time(request.form["start_utc"].strip()), "time_source": "entered by you"}
+            except ValueError as e:
+                return form_error(str(e), d, job_id)
+        cfgp = write_config(d, over)
+        argv = ["--config", str(cfgp), "measure", "--audio", str(audio), "--out", str(d / "out" / "measurements.yaml")]
+        if ev:
+            argv += ["--events", ev]
+        jobs._update(job_id, title=f"Analyse: {audio.name}",
+                     params={"audio": audio.name, "events": ev, "start_utc": rmeta.get("start_utc"),
+                             "time_source": rmeta.get("time_source"), "duration_s": rmeta.get("duration_s"),
+                             "operator": over["authorization"]["operator"]})
+        jobs.submit(job_id, [{"argv": argv}])
         return redirect(url_for("job_page", job_id=job_id))
 
     @app.post("/jobs/measure")
@@ -1050,7 +1078,23 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             meas = yaml.safe_load(mp.read_text())
         log = (d / "job.log").read_text(errors="replace") if (d / "job.log").exists() else ""
         has_live_spec = any((d / "out").rglob("live_spectrogram.png"))
+        step2 = None
+        if j["kind"] == "analyse" and j["state"] == "done" and meas:
+            found = [e for e in meas.get("events", []) if e.get("success")]
+            st = j["params"].get("start_utc")
+            ds_choice = None
+            if st:
+                dur = float(j["params"].get("duration_s") or 0)
+                need = set(needed_days(float(st), dur))
+                cands = [m for m in datasets() if m.get("rows")]
+                full = [m for m in cands if need <= dataset_days(m)]
+                ds_choice = (full or [m for m in cands if m.get("kind") == "archive"] or cands or [None])[0]
+                ds_choice = ds_choice["name"] if ds_choice else None
+            step2 = {"found": found, "events": ", ".join(f"{e['t_cpa_heard']:.1f}" for e in found),
+                     "start_iso": (dt.datetime.fromtimestamp(float(st), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                   if st else ""), "dataset": ds_choice}
         return render_template("job.html", job=j, results=results(d), meas=meas, has_live_spec=has_live_spec,
+                               step2=step2, datasets=datasets() if step2 else [], cfg=cfg_preview,
                                progress=job_progress(j["kind"], j["state"], log))
 
     @app.get("/jobs/<job_id>/status.json")
