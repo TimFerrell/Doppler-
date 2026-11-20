@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .. import cli
 
-STATES = ("queued", "running", "done", "failed")
+STATES = ("needs_data", "queued", "running", "done", "failed")
 
 
 class JobManager:
@@ -81,6 +81,15 @@ class JobManager:
         (d / "job.json").write_text(json.dumps(j, indent=1))
         return job_id, d
 
+    def hold(self, job_id: str, steps: list[dict], **info) -> None:
+        """Park a job (state 'needs_data') with its steps ready; ``release`` queues it later."""
+        self._update(job_id, state="needs_data", steps=steps, **info)
+
+    def release(self, job_id: str, requires: list[str] | None = None) -> None:
+        """Queue a parked job; it runs after ``requires`` (job ids) and only if they all succeeded."""
+        self._update(job_id, state="queued", requires=list(requires or []))
+        self._q.put(job_id)
+
     def submit(self, job_id: str, steps: list[dict]) -> None:
         """``steps``: [{"argv": [...], "warn": {exit_code: message}}], run in order.
 
@@ -101,6 +110,16 @@ class JobManager:
 
     def _run(self, job_id: str) -> None:
         d = self.root / job_id
+        j = self.get(job_id)
+        for req in j.get("requires") or []:  # the queue is FIFO, so required jobs have run by now
+            try:
+                rs = self.get(req)["state"]
+            except KeyError:
+                rs = "missing"
+            if rs != "done":
+                self._update(job_id, state="failed", finished=time.time(), warnings=[],
+                             error=f"a job this one waited for did not succeed ({rs}): {self.get(req)['title'] if rs != 'missing' else req}")
+                return
         j = self._update(job_id, state="running", started=time.time())
         log_path = d / "job.log"
         handler = logging.FileHandler(log_path)

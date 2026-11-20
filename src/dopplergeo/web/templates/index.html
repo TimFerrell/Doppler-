@@ -71,7 +71,7 @@
       <label>From your flight data
         <select name="dataset" data-toggles="adsb-upload">
           <option value="">— upload receiver logs instead —</option>
-          {% for m in datasets if m.rows %}<option value="{{ m.name }}" data-tmin="{{ m.t_min }}" data-tmax="{{ m.t_max }}" data-bbox="{{ m.bbox|join(',') if m.bbox else '' }}" {{ 'selected' if form.dataset == m.name }}>{{ m.name }} · {{ m.flights }} aircraft · {{ m.t_min|ts }} → {{ m.t_max|ts }}</option>{% endfor %}
+          {% for m in datasets if m.rows %}<option value="{{ m.name }}" data-days="{{ (m.days or [])|length }}" data-kind="{{ m.kind }}" data-tmin="{{ m.t_min }}" data-tmax="{{ m.t_max }}" data-bbox="{{ m.bbox|join(',') if m.bbox else '' }}" {{ 'selected' if form.dataset == m.name }}>{{ m.name }} · {{ m.flights }} aircraft · {{ m.t_min|ts }} → {{ m.t_max|ts }}</option>{% endfor %}
         </select></label>
       <label class="adsb-upload">or upload receiver logs
         <small>tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code> files, a .zip of them, or a .parquet from this tool</small>
@@ -218,6 +218,11 @@
           <form method="post" action="{{ url_for('data_subscribe', name=m.name) }}" class="inline"><input type="hidden" name="on" value="{{ '' if m.subscribe else 'yes' }}">
             <button class="link small">{{ 'daily updates on — turn off' if m.subscribe else 'turn on daily updates' }}</button></form>{% endif %}</td><td class="small">{{ m.t_min|ts }}<br>{{ m.t_max|ts }}</td><td>{{ m.flights }}</td><td>{{ m.rows }}</td>
         <td class="actions">{% if m.rows %}<button type="button" class="link preview-ds" data-name="{{ m.name }}">Show on map</button>{% endif %}
+          {% if m.kind == 'archive' %}<details class="adddays"><summary class="link">Add days</summary>
+            <form method="post" action="{{ url_for('data_add_days', name=m.name) }}">
+              <label>From <input type="date" name="date" max="{{ yesterday }}" required></label>
+              <label>To <input type="date" name="end_date" max="{{ yesterday }}"></label>
+              <button class="primary" type="submit">Download</button></form></details>{% endif %}
           {% if m.collecting %}<form method="post" action="{{ url_for('collect_stop', name=m.name) }}"><button class="link">Stop</button></form>
           {% else %}<form method="post" action="{{ url_for('data_delete', name=m.name) }}" onsubmit="return confirm('Delete dataset {{ m.name }}?')"><button class="link danger">Delete</button></form>{% endif %}</td></tr>
     {% endfor %}</tbody>

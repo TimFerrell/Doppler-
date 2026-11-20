@@ -18,7 +18,7 @@
   <p class="muted">Created {{ job.created|ts }} · ran {{ job|dur }}{% if job.state == 'done' %} · <a href="{{ url_for('job_zip', job_id=job.id) }}">download all results (.zip)</a>{% endif %}</p>
   <p class="now" id="now" {% if not progress.now %}hidden{% endif %}>{{ progress.now or '' }}</p>
   <div class="progressbar" id="pbar" {% if progress.percent is none or job.state == 'done' %}hidden{% endif %}><span style="width:{{ progress.percent or 0 }}%"></span></div>
-  <ol class="progress" id="progress">
+  <ol class="progress" id="progress" {% if job.state == 'needs_data' %}hidden{% endif %}>
     {% for st in progress.steps %}<li class="{{ 'done' if st.done else ('active' if st.active else '') }}"><span class="label">{{ st.label }}</span>{% if st.done and st.detail %}<span class="detail">{{ st.detail }}</span>{% elif st.active and st.active_detail %}<span class="detail">{{ st.active_detail }}</span>{% endif %}</li>{% endfor %}
   </ol>
   <div class="alert" id="error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
@@ -34,7 +34,49 @@
   </details>
 </section>
 
-{% if job.kind in ('locate', 'synth') %}
+{% if job.state == 'needs_data' %}
+{% set nd = job.needs_data %}
+<section class="card needsdata">
+  <h2>Flight data needed before this can run</h2>
+  <p>The recording starts <b>{{ nd.recording_start|ts }}</b> (from {{ nd.time_source }}). The analysis needs flight data for
+    {{ nd.needed_days|join(', ') }} (UTC), but <b>{{ nd.dataset }}</b> does not have
+    {% if nd.missing_days|length == 1 %}{{ nd.missing_days[0] }}{% else %}these days: {{ nd.missing_days|join(', ') }}{% endif %}.</p>
+  {% if nd.error %}<div class="alert">{{ nd.error }}</div>{% endif %}
+  {% if nd.target %}
+  <p class="hint">Downloading fetches each missing day from the adsb.lol archive (~3.6 GB per day, a few minutes each) into
+    <b>{{ nd.target }}</b>, then runs this analysis automatically. You can leave this page; the job list shows progress.</p>
+  <div class="jobactions">
+    <form method="post" action="{{ url_for('job_fetch_and_run', job_id=job.id) }}" class="inline">
+      <button class="primary" type="submit">⤓ Download {{ nd.missing_days|length }} day{{ '' if nd.missing_days|length == 1 else 's' }} (~{{ '%.1f'|format(3.6 * nd.missing_days|length) }} GB) and run</button></form>
+    <form method="post" action="{{ url_for('job_run_anyway', job_id=job.id) }}" class="inline">
+      <button class="secondary" type="submit" title="Run with the flight data that is there; it will likely find no matching flights">Run anyway</button></form>
+    <a class="button ghost" href="{{ url_for('index', **{'from': job.id}) }}">✎ Edit</a>
+  </div>
+  {% else %}
+  <p class="alert">No archive dataset in your library covers this location, so there is nowhere to add the days. Create one in the
+    Flight data tab (e.g. a state, the continental US or the whole world), then use ✎ Edit to run this again.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if job.requires and job.state in ('queued', 'running') %}
+<section class="card">
+  <h2>Waiting for flight data</h2>
+  <p class="hint">This analysis runs automatically once these downloads finish:
+    {% for r in job.requires %}<a href="{{ url_for('job_page', job_id=r) }}">download {{ loop.index }}</a>{{ ', ' if not loop.last }}{% endfor %}.</p>
+  <div id="downloads" class="downloads"><div id="dl-list"></div></div>
+</section>
+{% endif %}
+
+{% if job.kind in ('locate', 'measure') and not has_live_spec %}
+<section class="card">
+  <h2>Your recording</h2>
+  <p class="hint">Spectrogram, 40–500 Hz. A passing prop plane shows as a line that slides down in pitch. Click to play from there.</p>
+  <div class="inlinespec" data-src="{{ url_for('job_spectrogram', job_id=job.id) }}"><div class="specloading">Rendering the spectrogram…</div></div>
+</section>
+{% endif %}
+
+{% if job.kind in ('locate', 'synth') and job.state != 'needs_data' %}
 <section class="card livecard" id="live" data-src="{{ url_for('job_live', job_id=job.id) }}" data-state="{{ job.state }}">
   <div class="livehead">
     <h2>Live analysis</h2>
@@ -137,4 +179,5 @@
 </section>
 {% endfor %}
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='live.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='live.js') }}"></script>
+<script src="{{ url_for('static', filename='spectro.js') }}"></script>{% endblock %}

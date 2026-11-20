@@ -42,7 +42,7 @@ world", live collect, import), **Measure**, **Synthetic demo**. Job pages show s
 "What this means" explanation. No login: LAN only.
 
 ## Tests
-`python -m pytest -q tests`: offline, about 1–2 min, 57 tests at the time of writing. Phase-0 check:
+`python -m pytest -q tests`: offline, about 1–2 min, 59 tests at the time of writing. Phase-0 check:
 `dopplergeo synth-demo --out /tmp/s --seeds 1` should print "seed 1: #1 error 55.8 m".
 
 ## Library data rules

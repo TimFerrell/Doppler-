@@ -160,19 +160,22 @@ def cmd_locate(args, cfg) -> int:
         t_range = (start - tol - 3600.0, start + dur + tol + 3600.0)
     df = adsb.read_table(args.adsb, float(cfg["adsb"]["flight_gap_s"]), bbox=bbox, t_range=t_range)
     log.info("ADS-B rows in the search window: %d (%d aircraft)", len(df), df["icao24"].nunique())
+    no_data = None
     if df.empty:
         from .report import utc as _utc
 
         when = (f"the recording starts {_utc(start)}" if start is not None else "no recording start time is known")
-        raise SystemExit(f"No flight data in the search area for the recording's time: {when}, and the flight data "
-                         f"({args.adsb}) has nothing within {pad_m / 1000:.0f} km of the search centre in that window. "
-                         "Use flight data covering the recording's date and place (Flight data tab), or correct the start "
-                         "time if the file's metadata is wrong.")
+        # the audio is still analysed (spectrogram, flyovers) before stopping, so the job shows what was heard
+        no_data = (f"No flight data in the search area for the recording's time: {when}, and the flight data "
+                   f"({args.adsb}) has nothing within {pad_m / 1000:.0f} km of the search centre in that window. "
+                   "Use flight data covering the recording's date and place (Flight data tab), or correct the start "
+                   "time if the file's metadata is wrong.")
     truth = None
     if args.truth_latlon:
         la, lo = (float(v) for v in args.truth_latlon.split(","))
         truth = {"lat": la, "lon": lo}
     res = pipeline.run_locate(args.audio, df, center, radius, cfg, args.out, c, events_spec=_events_arg(args, cfg),
+                              no_data_reason=no_data,
                               audio_start=start, truth=truth, command=args.command_line, attestation=att,
                               inputs=[{"name": "adsb", "path": str(args.adsb), "sha256": _sha(args.adsb)}],
                               title="dopplergeo locate (Phase A)")

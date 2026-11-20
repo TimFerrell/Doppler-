@@ -88,3 +88,19 @@ def test_phase_a_file_based(tmp_path, capsys):
     assert not pts["combo"].str.contains(jet).any()  # known jet removed before candidate generation
     best = pd.read_csv(tmp_path / "run" / "best_per_combination.csv")
     assert best["score"].iloc[0] > 1.5 * best["score"].iloc[1]  # clear margin over the wrong flight pairs
+
+
+def test_no_flight_data_still_shows_what_was_heard(phase0):
+    """Without flight data the run still analyses the audio (spectrogram + flyovers) before stopping."""
+    from dopplergeo import live
+
+    cfg, c, d, truth = phase0
+    empty = adsb.coerce(pd.DataFrame({k: pd.Series(dtype=t) for k, t in adsb.SCHEMA.items()}))
+    with pytest.raises(RuntimeError, match="No flight data"):
+        pipeline.run_locate(d / "fx" / "audio.wav", empty, (truth["search"]["center_lat"], truth["search"]["center_lon"]),
+                            5000.0, cfg, d / "nodata", c, events_spec="whole", time_ref="absolute",
+                            audio_start=truth["audio"]["start_unix"], no_data_reason="No flight data for that time")
+    ev, _ = live.read_events(d / "nodata" / "live.jsonl")
+    kinds = [e["type"] for e in ev]
+    assert "spectrogram" in kinds and "flyover" in kinds and "nodata" in kinds and kinds[-1] == "failed"
+    assert (d / "nodata" / "recording_spectrogram.png").exists() and "stopped before the search" in (d / "nodata" / "report.md").read_text()

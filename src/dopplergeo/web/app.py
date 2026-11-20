@@ -161,6 +161,62 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     app.extensions["dopplergeo"]["scheduler"] = sched
 
     # ------------------------------------------------------------------ helpers
+    def render_spectrogram(audio_path: Path, img: Path, meta_p: Path) -> tuple[Path, Path]:
+        """Render (and cache) a 40–500 Hz spectrogram image of any audio/video file."""
+        if not img.exists() or img.stat().st_mtime < audio_path.stat().st_mtime or not meta_p.exists():
+            import matplotlib
+            import numpy as np
+
+            from .. import audio as audiomod
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            x, sr = audiomod.load_audio(audio_path, int(cfg_preview["audio"]["target_sr"]))
+            n_audio = len(x)
+            win = int(cfg_preview["spectrogram"]["window"])
+            if len(x) < win + win // 8:  # very short clips: pad so at least a couple of columns exist
+                x = np.concatenate([x, np.zeros(win + win // 8 - len(x), x.dtype)])
+            spec = audiomod.spectrogram_from_config(x, sr, cfg_preview)
+            sel = (spec.freqs >= 40) & (spec.freqs <= 500)
+            S = spec.db[sel]
+            S = S[::max(1, S.shape[0] // 400), ::max(1, S.shape[1] // 3000)]
+            lo, hi = np.percentile(S, [8, 99.7])
+            img.parent.mkdir(parents=True, exist_ok=True)
+            plt.imsave(img, np.clip((S - lo) / max(1e-6, hi - lo), 0, 1), cmap="magma", origin="lower")
+            meta_p.write_text(json.dumps({"t0": 0.0, "t1": max(n_audio, 1) / sr, "f0": float(spec.freqs[sel][0]),
+                                          "f1": float(spec.freqs[sel][-1])}))
+        return img, meta_p
+
+    def needed_days(start: float, dur: float) -> list[str]:
+        a = dt.datetime.fromtimestamp(start - 900, dt.timezone.utc).date()
+        b = dt.datetime.fromtimestamp(start + max(dur, 0) + 300, dt.timezone.utc).date()
+        return [(a + dt.timedelta(days=k)).isoformat() for k in range((b - a).days + 1)]
+
+    def dataset_days(meta: dict) -> set[str]:
+        if meta.get("days"):
+            return set(meta["days"])
+        if meta.get("t_min") and meta.get("t_max"):
+            a = dt.datetime.fromtimestamp(meta["t_min"], dt.timezone.utc).date()
+            b = dt.datetime.fromtimestamp(meta["t_max"], dt.timezone.utc).date()
+            return {(a + dt.timedelta(days=k)).isoformat() for k in range((b - a).days + 1)}
+        return set()
+
+    def archive_target(preferred: str | None, lat: float, lon: float) -> str | None:
+        """An archive dataset that can be extended with more days and covers (lat, lon)."""
+        def covers(m):
+            bb = m.get("request_bbox")
+            return bb is None or (bb[0] <= lat <= bb[2] and bb[1] <= lon <= bb[3])
+
+        if preferred and lib.exists(preferred):
+            m = lib.meta(preferred)
+            if m.get("kind") == "archive" and covers(m):
+                return preferred
+        for m in lib.list():
+            if m.get("kind") == "archive" and covers(m):
+                return m["name"]
+        return None
+
     def write_config(d: Path, overrides: dict) -> Path:
         merged = configmod.deep_merge(base_raw, overrides)
         p = d / "config.yaml"
@@ -385,6 +441,86 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             shutil.copytree(src, dst, copy_function=cp, dirs_exist_ok=True,
                             ignore=shutil.ignore_patterns("adsb.parquet"))
 
+    @app.get("/jobs/<job_id>/spectrogram.json")
+    def job_spectrogram(job_id):
+        j, d = get_job(job_id)
+        try:
+            argv = next(s_["argv"] for s_ in j["steps"] if "locate" in s_["argv"] or "measure" in s_["argv"])
+            audio = Path(_arg(argv, "--audio"))
+        except (StopIteration, TypeError):
+            abort(404)
+        if not audio.exists():
+            abort(404)
+        img, meta_p = render_spectrogram(audio, d / "preview" / "spectrogram.png", d / "preview" / "spectrogram.json")
+        return jsonify({**json.loads(meta_p.read_text()),
+                        "image": url_for("job_file", job_id=job_id, relpath="preview/spectrogram.png"),
+                        "audio": url_for("job_audio", job_id=job_id)})
+
+    @app.get("/jobs/<job_id>/audio")
+    def job_audio(job_id):
+        j, d = get_job(job_id)
+        argv = next((s_["argv"] for s_ in j["steps"] if "locate" in s_["argv"] or "measure" in s_["argv"]), None)
+        audio = Path(_arg(argv, "--audio")) if argv else None
+        if audio is None or not audio.exists():
+            abort(404)
+        if audio.suffix.lower() != ".wav":  # browsers cannot play every container: serve extracted audio
+            from ..audio import extract_audio
+
+            wav = d / "preview" / "audio.wav"
+            if not wav.exists():
+                extract_audio(audio, wav, int(cfg_preview["audio"]["target_sr"]))
+            audio = wav
+        return send_file(audio, mimetype="audio/wav")
+
+    @app.post("/jobs/<job_id>/fetch_and_run")
+    def job_fetch_and_run(job_id):
+        """Download the flight-data days a parked job is missing, then run it once they are in."""
+        j, d = get_job(job_id)
+        nd = j.get("needs_data") or {}
+        if j["state"] != "needs_data" or not nd.get("target"):
+            return redirect(url_for("job_page", job_id=job_id))
+        latest = sources.latest_archive_day()
+        days = nd["missing_days"]
+        too_new = [x for x in days if latest is None or x > latest.isoformat()]
+        if too_new:
+            jobs._update(job_id, needs_data={**nd, "error": "not published yet: " + ", ".join(too_new) +
+                                             " (adsb.lol publishes each day about a day later; try again then)"})
+            return redirect(url_for("job_page", job_id=job_id))
+        reqs = [enqueue_archive_day(nd["target"], x) for x in days]
+        sched.queued.update((nd["target"], x) for x in days)
+        jobs._update(job_id, needs_data={**nd, "fetch_jobs": reqs})
+        if nd["target"] != nd.get("dataset"):  # point the analysis at the dataset receiving the days
+            steps = json.loads(json.dumps(j["steps"]).replace(str(lib.path(nd["dataset"])), str(lib.path(nd["target"]))))
+            jobs._update(job_id, steps=steps)
+        jobs.release(job_id, requires=reqs)
+        return redirect(url_for("job_page", job_id=job_id))
+
+    @app.post("/jobs/<job_id>/run_anyway")
+    def job_run_anyway(job_id):
+        j, d = get_job(job_id)
+        if j["state"] == "needs_data":
+            jobs.release(job_id)
+        return redirect(url_for("job_page", job_id=job_id))
+
+    @app.post("/data/<name>/add_days")
+    def data_add_days(name):
+        try:
+            if not lib.exists(name) or lib.meta(name).get("kind") != "archive":
+                raise FormError("only archive datasets can be extended with more days")
+            a = dt.date.fromisoformat(request.form.get("date", "").strip())
+            b_raw = request.form.get("end_date", "").strip()
+            b = dt.date.fromisoformat(b_raw) if b_raw else a
+            if b < a or (b - a).days > 31:
+                raise FormError("choose 1 to 31 days, from <= to")
+            if b >= dt.datetime.now(dt.timezone.utc).date():
+                raise FormError("the archive only has complete past UTC days (published about a day later)")
+        except ValueError:
+            return page("dates must be YYYY-MM-DD", "data", 400)
+        except FormError as err:
+            return page(str(err), "data", 400)
+        jid = enqueue_archive_day(name, a.isoformat(), b.isoformat())
+        return redirect(url_for("job_page", job_id=jid))
+
     @app.post("/jobs/<job_id>/retry")
     def job_retry(job_id):
         """Run a finished/failed job again, unchanged, on the current code."""
@@ -492,6 +628,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 except ValueError as e:
                     raise FormError(str(e)) from None
             dsname = request.form.get("dataset", "").strip()
+            needs_data = None
             max_gap = None
             steps = []
             if dsname:
@@ -503,26 +640,23 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 adsb_path = lib.path(dsname)
                 max_gap = meta.get("max_gap_s")
                 adsb_desc = f"library dataset {dsname}"
-                # refuse up front when the recording's time is not covered (instead of a job that cannot succeed)
-                st = start
-                if isinstance(st, str):
-                    from ..cli import parse_time as _pt
-
-                    try:
-                        st = _pt(st)
-                    except ValueError:
-                        st = None
-                if st is not None and meta.get("t_min") and meta.get("t_max"):
-                    from ..report import utc as _utc
-
+                # work out which UTC days the recording needs and which of them the dataset lacks
+                st = start if not isinstance(start, str) else None
+                if st is not None:
                     dur = float(rmeta.get("duration_s") or 0)
-                    if st + dur < meta["t_min"] - 3600 or st > meta["t_max"] + 3600:
-                        src = rmeta.get("time_source") or "the start time given"
-                        raise FormError(
-                            f"The recording starts {_utc(st)} (from {src}), but the flight data '{dsname}' covers "
-                            f"{_utc(meta['t_min'])} to {_utc(meta['t_max'])}. Get flight data for the recording's date "
-                            "(Flight data tab), or, if the file's date is wrong, enter the correct start time under "
-                            "'When it started (UTC)'.")
+                    if not dur:
+                        try:
+                            from ..audio import media_info
+
+                            dur = float(media_info(audio)["duration_s"] or 0)
+                        except Exception:  # noqa: BLE001
+                            dur = 0.0
+                    need = needed_days(st, dur)
+                    missing = [x for x in need if x not in dataset_days(meta)]
+                    if missing:
+                        needs_data = {"missing_days": missing, "needed_days": need, "dataset": dsname,
+                                      "recording_start": st, "time_source": rmeta.get("time_source") or "the start time given",
+                                      "target": archive_target(dsname, lat, lon)}
             else:
                 files = [f for f in request.files.getlist("adsb") if f and f.filename]
                 src = d / "inputs" / "adsb"
@@ -575,7 +709,10 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                   "start_utc": start, "events": ev, "truth": [tlat, tlon] if tlat is not None else None,
                   "refine_levels": refine, "dt_sweep_s": dt_sweep, "harmonics": harmonics}
         jobs._update(job_id, title=f"Locate: {audio.name}", params=params)
-        jobs.submit(job_id, steps)
+        if needs_data:
+            jobs.hold(job_id, steps, needs_data=needs_data)
+        else:
+            jobs.submit(job_id, steps)
         return redirect(url_for("job_page", job_id=job_id))
 
     # ------------------------------------------------------------------ recordings (browser microphone)
@@ -674,26 +811,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             p = recording_path(name)
         except FormError:
             abort(404)
-        img = p.with_suffix(".spec.png")
-        meta_p = p.with_suffix(".spec.json")
-        if not img.exists() or img.stat().st_mtime < p.stat().st_mtime or not meta_p.exists():
-            from .. import audio as audiomod
-            from ..live import LiveFeed  # noqa: F401 - same rendering as the live view
-            import numpy as np
-            import matplotlib
-
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            x, sr = audiomod.load_audio(p, int(cfg_preview["audio"]["target_sr"]))
-            spec = audiomod.spectrogram_from_config(x, sr, cfg_preview)
-            sel = (spec.freqs >= 40) & (spec.freqs <= 500)
-            S = spec.db[sel]
-            S = S[::max(1, S.shape[0] // 400), ::max(1, S.shape[1] // 3000)]
-            lo, hi = np.percentile(S, [8, 99.7])
-            plt.imsave(img, np.clip((S - lo) / max(1e-6, hi - lo), 0, 1), cmap="magma", origin="lower")
-            meta_p.write_text(json.dumps({"t0": 0.0, "t1": len(x) / sr, "f0": float(spec.freqs[sel][0]),
-                                          "f1": float(spec.freqs[sel][-1])}))
+        img, meta_p = render_spectrogram(p, p.with_suffix(".spec.png"), p.with_suffix(".spec.json"))
         meta = json.loads(meta_p.read_text())
         return jsonify({**meta, "image": url_for("recording_spectrogram_png", name=name),
                         "audio": url_for("get_recording", name=name)})
@@ -931,7 +1049,8 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         if mp.exists():
             meas = yaml.safe_load(mp.read_text())
         log = (d / "job.log").read_text(errors="replace") if (d / "job.log").exists() else ""
-        return render_template("job.html", job=j, results=results(d), meas=meas,
+        has_live_spec = any((d / "out").rglob("live_spectrogram.png"))
+        return render_template("job.html", job=j, results=results(d), meas=meas, has_live_spec=has_live_spec,
                                progress=job_progress(j["kind"], j["state"], log))
 
     @app.get("/jobs/<job_id>/status.json")

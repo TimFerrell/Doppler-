@@ -91,6 +91,21 @@
   const rk = document.querySelector('input[name=radius_km]'), rw = document.getElementById('radius-warn');
   if (rk && rw) { const f = () => { rw.hidden = !(parseFloat(rk.value) > 50); }; rk.addEventListener('input', f); f(); }
 
+  // what the chosen flight dataset covers, with a shortcut to add days
+  const dsSel2 = document.querySelector('form[data-panel=locate] select[name=dataset]');
+  if (dsSel2) {
+    const hint = document.createElement('p'); hint.className = 'hint dscover'; dsSel2.closest('label').after(hint);
+    const upd = () => {
+      const o = dsSel2.selectedOptions[0];
+      if (!o || !o.value) { hint.textContent = ''; return; }
+      const f = t => new Date(parseFloat(t) * 1000).toISOString().slice(0, 10);
+      hint.innerHTML = `Covers ${f(o.dataset.tmin)} → ${f(o.dataset.tmax)}` + (o.dataset.days > 0 ? ` (${o.dataset.days} day${o.dataset.days == 1 ? '' : 's'})` : '') +
+        (o.dataset.kind === 'archive' ? ' · <a href="/?tab=data">add days</a>' : '') +
+        '. If your recording is outside it, you will be offered to download the missing days.';
+    };
+    dsSel2.addEventListener('change', upd); upd();
+  }
+
   // "Use in Locate" from the recordings list
   document.querySelectorAll('.use-rec').forEach(b => b.addEventListener('click', () => {
     const sel = document.querySelector('form[data-panel=locate] select[name=recording]');

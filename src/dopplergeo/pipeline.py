@@ -273,7 +273,7 @@ def runner_up_distinct(pts: pd.DataFrame, min_sep_m: float) -> pd.Series | None:
 def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], radius_m: float, cfg: dict,
                out_dir, c: float, events_spec="auto", time_ref: str | None = None, audio_start: float | None = None,
                truth: dict | None = None, command: str = "", attestation: str = "", inputs: list | None = None,
-               title: str = "dopplergeo locate") -> dict:
+               title: str = "dopplergeo locate", no_data_reason: str | None = None) -> dict:
     """Audio + unified ADS-B table -> ranked candidate locations, report.md, CSV and plots.
 
     Also streams ``<out>/live.jsonl`` (see live.py) for the animated web view.
@@ -285,7 +285,7 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
               truth=({"lat": truth["lat"], "lon": truth["lon"]} if truth else None))
     try:
         res = _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, events_spec, time_ref,
-                          audio_start, truth, command, attestation, inputs, title)
+                          audio_start, truth, command, attestation, inputs, title, no_data_reason)
         live.emit("done")
         return res
     except BaseException as e:
@@ -296,7 +296,7 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
 
 
 def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, events_spec, time_ref, audio_start,
-                truth, command, attestation, inputs, title) -> dict:
+                truth, command, attestation, inputs, title, no_data_reason=None) -> dict:
     from pathlib import Path
 
     from . import audio as audiomod
@@ -347,6 +347,13 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
                                "why each part was rejected (or give flyover times explicitly)")
         raise RuntimeError(f"curve fit failed for event(s) {bad}: {[meas[i - 1].to_dict() for i in bad]}")
     events = make_events(spec, meas, cfg)
+    if no_data_reason or adsb_df.empty:
+        from . import report as _report
+
+        reason = no_data_reason or "No flight data in the search window."
+        live.emit("nodata", reason=reason)
+        _report.write_stopped_report(out, spec, cfg, meas, c, reason, inputs, attestation, title)
+        raise RuntimeError(reason)
 
     live.emit("stage", stage="flights")
     with slog.timer("adsb+tracks"):

@@ -303,3 +303,41 @@ def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, 
     p = out_dir / "report.md"
     p.write_text("\n".join(L))
     return p
+
+
+def write_stopped_report(out_dir, spec, cfg, meas, c, reason, inputs, attestation, title) -> Path:
+    """Report for a run that heard flyovers but could not continue (e.g. no flight data for that time)."""
+    from .model import straight_line_curve
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sel = (spec.freqs >= 40) & (spec.freqs <= 420)
+    fig, ax = plt.subplots(figsize=(11, 5), dpi=110)
+    S = spec.db[sel]
+    vmin, vmax = np.percentile(S, [5, 99.7])
+    ax.imshow(S, origin="lower", aspect="auto", cmap="magma", vmin=vmin, vmax=vmax,
+              extent=[spec.times[0], spec.times[-1], spec.freqs[sel][0], spec.freqs[sel][-1]])
+    for k, m in enumerate(meas, 1):
+        if not np.isfinite(m.f0):
+            continue
+        tt = np.linspace(m.t_lo, m.t_hi, 300)
+        ax.plot(tt, straight_line_curve(tt, m.f0, m.v, m.d, m.t_cpa, c), "-", color="#7CFC9A", lw=2,
+                label=f"plane {k}: closest at {m.t_cpa_heard:.1f} s, ~{m.v:.0f} m/s, ~{m.d / 1000:.1f} km")
+        ax.plot([m.t_cpa_heard], [m.f0], "o", color="white", ms=7, mfc="none", mew=2)
+    ax.set_xlabel("seconds into the recording")
+    ax.set_ylabel("Hz")
+    ax.set_title("The recording, with the plane flyovers that were found")
+    if meas:
+        ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_dir / "recording_spectrogram.png")
+    plt.close(fig)
+    L = [f"# {title}: stopped before the search", "", "## Authorization", "", attestation, "", "## Why it stopped", "",
+         reason, "", "## What was heard", ""]
+    for k, m in enumerate(meas, 1):
+        L.append(f"- plane {k}: closest at {m.t_cpa_heard:.1f} s into the recording, engine {m.f0:.1f} Hz, "
+                 f"~{m.v:.0f} m/s, closest distance ~{m.d:.0f} m (fit error {m.rms_hz:.2f} Hz)")
+    L += ["", "![recording spectrogram](recording_spectrogram.png)", ""]
+    p = out_dir / "report.md"
+    p.write_text("\n".join(L))
+    return p

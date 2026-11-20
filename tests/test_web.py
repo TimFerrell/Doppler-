@@ -119,7 +119,7 @@ def test_rehydrate_form_validation(client):
     assert r.status_code == 400
 
 
-def test_locate_refuses_recording_outside_flight_data(client, tmp_path):
+def test_locate_parks_job_when_flight_data_is_missing(client, tmp_path):
     import numpy as np
     import soundfile as sf
 
@@ -140,8 +140,13 @@ def test_locate_refuses_recording_outside_flight_data(client, tmp_path):
                                       "label": "old"}, content_type="multipart/form-data").get_json()["name"]
     r = c.post("/jobs/locate", data={"attest": "yes", "recording": rec, "dataset": "us", "center_lat": "33.96",
                                      "center_lon": "-84.46", "radius_km": "200"})
-    html = r.get_data(as_text=True)
-    assert r.status_code == 400 and "2016-09-18" in html and "2026-10-21" in html
+    assert r.status_code == 302
+    jid = r.headers["Location"].rstrip("/").split("/")[-1]
+    page = c.get(f"/jobs/{jid}").get_data(as_text=True)
+    assert "Flight data needed" in page and "2016-09-18" in page and "Download 1 day" in page
+    assert c.get(f"/jobs/{jid}/status.json").get_json()["state"] == "needs_data"
+    spec = c.get(f"/jobs/{jid}/spectrogram.json")
+    assert spec.status_code == 200 and c.get(spec.get_json()["image"]).status_code == 200
 
 
 def _locate_job(c, tmp_path):
@@ -190,3 +195,54 @@ def test_retry_and_edit_rerun(client, tmp_path):
     assert "radius_km=9" in " ".join(c.get(f"/jobs/{eid}/status.json").get_json()["log"].split())
     assert c.post("/jobs/locate", data={"attest": "yes", "reuse_job": "nope", "center_lat": "1", "center_lon": "1",
                                         "radius_km": "1"}).status_code == 400
+
+
+def test_download_missing_days_then_run(client, tmp_path, monkeypatch):
+    """needs_data -> 'Download and run' fetches the day into the dataset, then the analysis runs by itself."""
+    import datetime as dt
+    import gzip
+    import json as _json
+    import tarfile
+
+    import numpy as np
+    import soundfile as sf
+
+    from dopplergeo import sources
+
+    c, _ = client
+    lib = sources.Library(tmp_path / "lib")
+    lib.create("us", {"source": "test", "kind": "archive", "request_bbox": [24.4, -125.0, 49.5, -66.5], "days": [],
+                      "max_gap_s": 120.0})
+    dd = lib.path("us") / "day=2026-10-21"
+    dd.mkdir()
+    sources.rows_to_frame([{"time": 1792540800.0 + k, "icao24": "abc", "lat": 34.0, "lon": -84.4, "alt_msl_m": 900.0,
+                            "vx_east": 50.0, "vy_north": 0.0, "vz_up": 0.0, "type_code": "C172"}
+                           for k in range(10)]).to_parquet(dd / "tile_+30_-090.parquet")
+    lib.refresh("us")
+    # a fake one-day archive for 2026-10-25 served from local files
+    t0 = dt.datetime(2026, 10, 25, 12, tzinfo=dt.timezone.utc).timestamp()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        obj = {"icao": "a00001", "t": "C172", "timestamp": t0,
+               "trace": [[k * 10.0, 34.0, -84.4 + 0.01 * k, 3000, 100.0, 90.0, 0, 0, None, None, None, None, None, None]
+                         for k in range(30)]}
+        data = gzip.compress(_json.dumps(obj).encode())
+        ti = tarfile.TarInfo("./traces/01/trace_full_a00001.json"); ti.size = len(data)
+        tar.addfile(ti, io.BytesIO(data))
+    part = tmp_path / "day.tar.aa"
+    part.write_bytes(buf.getvalue())
+    monkeypatch.setattr(sources, "adsblol_part_urls", lambda day, variant="prod-0", max_parts=12: [(part.as_uri(), part.stat().st_size)])
+    monkeypatch.setattr(sources, "latest_archive_day", lambda today=None, lookback=4: dt.date(2026, 11, 19))
+    wav = io.BytesIO()
+    sf.write(wav, np.zeros(16000 * 20, np.float32), 16000, format="WAV")
+    rec = c.post("/recordings", data={"audio": (io.BytesIO(wav.getvalue()), "r.wav"), "start_utc": f"{t0}"},
+                 content_type="multipart/form-data").get_json()["name"]
+    r = c.post("/jobs/locate", data={"attest": "yes", "recording": rec, "dataset": "us", "center_lat": "34.0",
+                                     "center_lon": "-84.4", "radius_km": "5"})
+    jid = r.headers["Location"].rstrip("/").split("/")[-1]
+    assert c.get(f"/jobs/{jid}/status.json").get_json()["state"] == "needs_data"
+    assert c.post(f"/jobs/{jid}/fetch_and_run").status_code == 302
+    s_ = _wait(c, jid)
+    assert "2026-10-25" in lib.meta("us")["days"]  # the missing day was downloaded into the dataset
+    assert s_["state"] == "failed" and "waited for" not in (s_["error"] or "")  # then the analysis itself ran
+    assert "flyover" in (s_["error"] or "")  # (silent test audio: it stops at 'no flyover found')
