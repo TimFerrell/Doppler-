@@ -69,6 +69,21 @@
       msg.className = 'check-cover ' + level;
       msg.innerHTML = out.map(t => `<div class="${t.startsWith('✓') ? 'good' : ''}">${t}</div>`).join('');
     };
+    // choosing a recording auto-selects flight data that covers its time (the most recent such dataset)
+    const recSel = lf.querySelector('select[name=recording]'), dsSel = lf.querySelector('select[name=dataset]');
+    const autoPick = () => {
+      const r = recSel.selectedOptions[0];
+      if (!r || !r.dataset.start) return;
+      const t = parseFloat(r.dataset.start), dur = parseFloat(r.dataset.dur || '0');
+      const fits = [...dsSel.options].filter(o => o.value && parseFloat(o.dataset.tmin) <= t + dur && parseFloat(o.dataset.tmax) >= t);
+      if (fits.length) { dsSel.value = fits[0].value; dsSel.dispatchEvent(new Event('change')); }
+    };
+    recSel.addEventListener('change', autoPick);
+    if (!dsSel.value) {  // a single dataset needs no choosing
+      const real = [...dsSel.options].filter(o => o.value);
+      if (real.length === 1) { dsSel.value = real[0].value; dsSel.dispatchEvent(new Event('change')); }
+    }
+    autoPick();
     lf.addEventListener('change', check); lf.addEventListener('input', check); check();
   }
 
