@@ -15,3 +15,4 @@ flask
 markdown
 imageio-ffmpeg
 cryptography
+yt-dlp

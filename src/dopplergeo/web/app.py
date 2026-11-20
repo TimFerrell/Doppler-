@@ -838,6 +838,76 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         out.with_suffix(".json").write_text(json.dumps(meta, indent=1))
         return redirect(url_for("index", tab="record"))
 
+
+    # ------------------------------------------------------------------ YouTube link import
+    YT_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+                          "youtu.be", "www.youtu.be"})
+    YT_MAX_S = 2 * 3600
+
+    @app.post("/recordings/youtube")
+    def fetch_youtube():
+        """Audio of a YouTube video -> recordings library, via yt-dlp; only with the operator's attestation."""
+        from urllib.parse import urlparse
+
+        url = (request.form.get("url") or "").strip()
+        try:
+            host = (urlparse(url if "://" in url else f"https://{url}").hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host not in YT_HOSTS:
+            return page("Only YouTube links are accepted here — for anything else, download it yourself and use "
+                        "'Import a video or audio file'.", "record", 400)
+        if request.form.get("attest") != "yes":
+            return page("Confirm that you own this video or are authorized to download and analyse its audio.",
+                        "record", 400)
+        try:
+            from yt_dlp import YoutubeDL
+        except ImportError:
+            return page("yt-dlp is not installed in this deployment (it is in requirements.txt; the auto-updater "
+                        "installs new requirements on update).", "record", 400)
+        tmp = rec_dir / ".incoming"
+        tmp.mkdir(parents=True, exist_ok=True)
+        try:
+            with YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True}) as ydl:
+                info = ydl.extract_info(url, download=False) or {}
+            vid = str(info.get("id") or "")
+            if not vid:
+                raise RuntimeError("yt-dlp found no video at that link")
+            dur = info.get("duration")
+            if dur and float(dur) > YT_MAX_S:
+                raise FormError(f"the video is {float(dur) / 60:.0f} min long; the limit is {YT_MAX_S // 60} min")
+            with YoutubeDL({"quiet": True, "noplaylist": True, "format": "bestaudio/best",
+                            "outtmpl": str(tmp / f"yt-{vid}.%(ext)s")}) as ydl:
+                ydl.download([url])
+            src = next(iter(sorted(tmp.glob(f"yt-{vid}.*"))), None)
+            if src is None:
+                raise RuntimeError("yt-dlp finished but the audio file is missing")
+        except FormError as err:
+            return page(str(err), "record", 400)
+        except Exception as e:  # noqa: BLE001
+            return page(f"YouTube fetch failed: {e}", "record", 400)
+        from ..audio import extract_audio
+
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", info.get("title") or "video").strip("-")[:40] or "video"
+        out = rec_dir / f"yt-{vid}-{slug}.wav"
+        try:
+            extract_audio(src, out, int(cfg_preview["audio"]["target_sr"]))
+        except RuntimeError as err:
+            return page(str(err), "record", 400)
+        finally:
+            src.unlink(missing_ok=True)
+        import soundfile as sf
+
+        meta = {"start_utc": None, "time_source": "none found — enter the start time in Locate",
+                "duration_s": sf.info(str(out)).duration, "sr": sf.info(str(out)).samplerate,
+                "source": f"YouTube: {url}", "license": info.get("license"),
+                "attribution": (f"\"{info.get('title')}\" by {info.get('uploader') or 'unknown'} ({url})"
+                                + (f", {info.get('license')}" if info.get("license") else "")),
+                "attested": "operator affirmed ownership or authorization at import",
+                "label": request.form.get("label", "")[:120] or (info.get("title") or "")[:120]}
+        out.with_suffix(".json").write_text(json.dumps(meta, indent=1))
+        return redirect(url_for("index", tab="record"))
+
     @app.post("/recordings/import")
     def import_recording():
         """Audio or video file -> recordings library (audio extracted with ffmpeg, time from metadata)."""

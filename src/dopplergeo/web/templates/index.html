@@ -207,6 +207,20 @@
     <label class="check"><input type="checkbox" name="time_is_end" value="yes"><span>The metadata time marks the <em>end</em> of the recording (subtract its length)</span></label>
     <button class="primary" type="submit">Import</button>
   </form>
+  <form method="post" action="{{ url_for('fetch_youtube') }}" class="sub">
+    <input type="hidden" name="tab" value="record">
+    <h3>Import from a YouTube link</h3>
+    <p class="muted small">The audio track is downloaded with yt-dlp and converted to WAV like any other import.
+      YouTube's terms only allow downloading your own uploads or properly licensed videos, so this needs your
+      confirmation below.</p>
+    <div class="grid3">
+      <label>YouTube URL <input type="url" name="url" required placeholder="https://www.youtube.com/watch?v=&hellip;"></label>
+      <label>Label <small>optional</small><input name="label" maxlength="40"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="attest" value="yes" required><span>I own this video or am
+      authorized to download and analyse its audio</span></label>
+    <button class="primary" type="submit">Fetch audio</button>
+  </form>
   <details class="examples" {% if not recordings %}open{% endif %}>
     <summary><h2 class="inl">Example recordings to test with</h2> <small class="muted">openly licensed, from Freesound</small></summary>
     <p class="hint">Real aircraft recordings their authors published under open licenses. Only the facts each author published are

@@ -325,3 +325,59 @@ def test_example_recordings_listed_and_fetched_via_api(client, tmp_path, monkeyp
     meta = json.loads(out[0].with_suffix(".json").read_text())
     assert meta["start_utc"] is None and "marcushagued" in meta["attribution"]
     assert "marcushagued" in c.get("/?tab=record").get_data(as_text=True)
+
+
+def test_youtube_link_import(client, tmp_path, monkeypatch):
+    import json
+    import sys
+    import types
+
+    import numpy as np
+    import soundfile as sf
+
+    c, _ = client
+    html = c.get("/?tab=record").get_data(as_text=True)
+    assert "Import from a YouTube link" in html
+    # host allowlist and the attestation gate both fire before any downloader is touched
+    r = c.post("/recordings/youtube", data={"url": "https://vimeo.com/123", "attest": "yes"})
+    assert r.status_code == 400 and "Only YouTube" in r.get_data(as_text=True)
+    r = c.post("/recordings/youtube", data={"url": "https://www.youtube.com/watch?v=abc123xyz_-"})
+    assert r.status_code == 400 and "authorized" in r.get_data(as_text=True)
+
+    class FakeYDL:
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"id": "abc123xyz_-", "title": "Backyard flyover", "uploader": "me", "duration": 12,
+                    "license": "Creative Commons Attribution license (reuse allowed)"}
+
+        def download(self, urls):
+            p = self.opts["outtmpl"].replace("%(ext)s", "webm")
+            sf.write(p, (0.1 * np.sin(np.arange(16000) * 0.1)).astype("float32"), 16000, format="WAV")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYDL))
+    r = c.post("/recordings/youtube",
+               data={"url": "https://www.youtube.com/watch?v=abc123xyz_-", "attest": "yes", "label": "yard"})
+    assert r.status_code == 302, r.get_data(as_text=True)
+    out = list((tmp_path / "rec").glob("yt-abc123xyz_--*.wav"))
+    assert len(out) == 1
+    meta = json.loads(out[0].with_suffix(".json").read_text())
+    assert meta["source"].startswith("YouTube:") and meta["attested"] and meta["license"]
+    assert "yard" in c.get("/?tab=record").get_data(as_text=True)
+
+    # the duration cap is enforced before downloading
+    class LongYDL(FakeYDL):
+        def extract_info(self, url, download=False):
+            return {"id": "toolongvid1", "title": "t", "duration": 3 * 3600}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=LongYDL))
+    r = c.post("/recordings/youtube", data={"url": "https://youtu.be/toolongvid1", "attest": "yes"})
+    assert r.status_code == 400 and "min long" in r.get_data(as_text=True)
+    assert not list((tmp_path / "rec").glob("yt-toolongvid1-*.wav"))
