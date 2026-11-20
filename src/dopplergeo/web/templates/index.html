@@ -2,83 +2,136 @@
 {% set tab = tab or 'locate' %}
 {% block body %}
 <section class="hero">
-  <h1>Locate a recording from aircraft Doppler curves</h1>
-  <p>Record or upload your own audio, pick ADS-B data for the same time, and the engine tones of passing
-  propeller aircraft are matched against their flight tracks to estimate where the recording was made.</p>
+  <h1>Find where a recording was made, from the planes overhead</h1>
+  <p>When a propeller plane flies past, its engine hum drops in pitch (the Doppler effect). The exact shape of that
+  pitch curve depends on how far away you were and on the plane's path. dopplergeo compares the curves in your recording
+  with the real flight paths of planes that were in the air at that time (ADS-B data), and finds the spot on the ground
+  where the curves match best.</p>
 </section>
+
+<ol class="steps" aria-label="How to use dopplergeo">
+  <li class="{{ 'ok' if datasets|selectattr('rows')|list else '' }}">
+    <button type="button" class="steplink" data-goto="data"><span class="n">1</span>
+      <span><b>Get flight data</b><br><small>{% set n = datasets|selectattr('rows')|list|length %}{{ n }} dataset{{ '' if n == 1 else 's' }} ready{% if not n %} — start here{% endif %}</small></span></button>
+    <p>ADS-B positions of the planes that were overhead when you recorded. Rehydrate a past day (e.g. all of Florida),
+      or collect live before you record.</p></li>
+  <li class="{{ 'ok' if recordings else '' }}">
+    <button type="button" class="steplink" data-goto="record"><span class="n">2</span>
+      <span><b>Record or import audio</b><br><small>{{ recordings|length }} recording{{ '' if recordings|length == 1 else 's' }}</small></span></button>
+    <p>Record outdoors while light planes pass, with your microphone, or import a phone video. A few minutes with
+      two or more flyovers works best.</p></li>
+  <li>
+    <button type="button" class="steplink" data-goto="locate"><span class="n">3</span>
+      <span><b>Locate</b><br><small>pick both, set a rough area</small></span></button>
+    <p>Choose the recording and the flight data, mark roughly where to search, and run. A few minutes at most.</p></li>
+  <li>
+    <span class="steplink static"><span class="n">4</span><span><b>Read the result</b><br><small>in the job page</small></span></span>
+    <p>A map of the most likely spots, the flights that matched, and how confident the answer is.</p></li>
+</ol>
 
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
 
 <div class="tabs" role="tablist">
-  {% for key, label in [('locate','Locate'),('record','Record'),('data','ADS-B data'),('measure','Measure'),('synth','Synthetic demo')] %}
+  {% for key, label in [('locate','3 · Locate'),('record','2 · Record'),('data','1 · Flight data'),('measure','Measure'),('synth','Synthetic demo')] %}
   <button role="tab" type="button" data-tab="{{ key }}" class="{{ 'on' if tab == key }}">{{ label }}</button>
   {% endfor %}
 </div>
 
 {# ------------------------------------------------------------------ LOCATE #}
-<form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data">
+<form class="card panel {{ 'on' if tab == 'locate' }}" data-panel="locate" method="post" action="{{ url_for('submit_locate') }}" enctype="multipart/form-data" id="locate-form">
   <input type="hidden" name="tab" value="locate">
+  <p class="intro">Pick a recording and flight data that cover the <b>same time</b>, mark the area to search, and run.
+    The tool finds each plane passing in the audio, tries every 200 m spot in the area, and scores how well the
+    real flight paths explain what you heard there.</p>
+
   <div class="grid2">
     <fieldset class="flat">
-      <legend>Recording</legend>
+      <legend><span class="n">a</span> Recording</legend>
       <label>From your recordings
         <select name="recording" data-toggles="audio-upload">
           <option value="">— upload a file instead —</option>
-          {% for r in recordings %}<option value="{{ r.name }}" data-start="{{ r.start_utc or '' }}" {{ 'selected' if form.recording == r.name }}>{{ r.name }} · {{ r.duration_s|secs if r.duration_s else '' }}</option>{% endfor %}
+          {% for r in recordings %}<option value="{{ r.name }}" data-start="{{ r.start_utc or '' }}" data-dur="{{ r.duration_s or '' }}" {{ 'selected' if form.recording == r.name }}>{{ r.name }}{% if r.duration_s %} · {{ r.duration_s|secs }}{% endif %}</option>{% endfor %}
         </select></label>
-      <label class="audio-upload">or upload <small>audio (WAV, FLAC, MP3, M4A) or video (MOV, MP4…); a video's recording time is read from its metadata</small>
+      <label class="audio-upload">or upload a file
+        <small>Audio (WAV, FLAC, MP3, M4A) or a phone video (MOV, MP4…). For videos the start time is read from the file.</small>
         <input type="file" name="audio" accept=".wav,.flac,.mp3,.ogg,.m4a,.aif,.aiff,.mp4,.mov,.m4v,.mkv,.webm,.avi,.3gp,audio/*,video/*"></label>
+      {% if not recordings %}<p class="hint">No recordings yet: record one in step 2 or upload a file here.</p>{% endif %}
     </fieldset>
     <fieldset class="flat">
-      <legend>ADS-B data</legend>
-      <label>From the data library
+      <legend><span class="n">b</span> Flight data (ADS-B)</legend>
+      <label>From your flight data
         <select name="dataset" data-toggles="adsb-upload">
-          <option value="">— upload files instead —</option>
-          {% for m in datasets if m.rows %}<option value="{{ m.name }}" {{ 'selected' if form.dataset == m.name }}>{{ m.name }} · {{ m.flights }} aircraft · {{ m.t_min|ts }}</option>{% endfor %}
+          <option value="">— upload receiver logs instead —</option>
+          {% for m in datasets if m.rows %}<option value="{{ m.name }}" data-tmin="{{ m.t_min }}" data-tmax="{{ m.t_max }}" data-bbox="{{ m.bbox|join(',') if m.bbox else '' }}" {{ 'selected' if form.dataset == m.name }}>{{ m.name }} · {{ m.flights }} aircraft · {{ m.t_min|ts }} → {{ m.t_max|ts }}</option>{% endfor %}
         </select></label>
-      <label class="adsb-upload">or upload <small>unified .parquet, tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code>, or a .zip</small>
+      <label class="adsb-upload">or upload receiver logs
+        <small>tar1090 <code>history_*.json</code> / readsb <code>aircraft.json</code> files, a .zip of them, or a .parquet from this tool</small>
         <input type="file" name="adsb" multiple accept=".parquet,.json,.jsonl,.gz,.zip"></label>
+      {% if not datasets|selectattr('rows')|list %}<p class="hint">No flight data yet: get some in step 1 (e.g. rehydrate the day of your recording).</p>{% endif %}
     </fieldset>
   </div>
+  <div class="check-cover" id="cover-msg" hidden></div>
+
   <fieldset>
-    <legend>Search region <small>click the map to set the centre</small></legend>
+    <legend><span class="n">c</span> Where to search</legend>
+    <p class="hint">Click the map at roughly where the recording might have been made; the circle is the area that gets
+      searched. A bigger circle takes longer and is more likely to contain look-alike spots. If you have no idea at
+      all, this tool needs at least a region to start from (searching a whole state is planned, not built yet).</p>
     <div class="pickmap" data-lat="center_lat" data-lon="center_lon" data-radius-km="radius_km"></div>
     <div class="grid3">
-      <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" required></label>
-      <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" required></label>
-      <label>Radius (km) <input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
+      <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" placeholder="click the map" required></label>
+      <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" placeholder="click the map" required></label>
+      <label>Search radius (km) <small>6–10 km is typical</small><input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
     </div>
   </fieldset>
+
   <fieldset>
-    <legend>Recording details <small>optional</small></legend>
-    <div class="grid3">
-      <label>Start time (UTC) <small>filled from your recordings</small><input name="start_utc" value="{{ form.start_utc }}" placeholder="2026-11-20T14:03:12Z"></label>
-      <label>Ground elevation (m MSL) <input name="elevation_m" inputmode="decimal" value="{{ form.elevation_m }}" placeholder="{{ cfg.elevation.constant_m }}"></label>
-      <label>DEM GeoTIFF path on this machine <input name="dem_path" value="{{ form.dem_path }}" placeholder="data/dem/mosaic.tif"></label>
-      <label>Flyover times (s from start) <input name="events" value="{{ form.events }}" placeholder="auto-detect"></label>
-      <label>Known latitude <small>to measure error</small><input name="truth_lat" inputmode="decimal" value="{{ form.truth_lat }}"></label>
-      <label>Known longitude <input name="truth_lon" inputmode="decimal" value="{{ form.truth_lon }}"></label>
+    <legend><span class="n">d</span> About the recording <small>optional, but helps</small></legend>
+    <div class="grid2">
+      <label>When it started (UTC)
+        <small>Picks which flights to compare. Filled automatically for recordings made here or imported videos.
+          Format like 2026-11-18T14:03:12Z.</small>
+        <input name="start_utc" value="{{ form.start_utc }}" placeholder="from the recording, if known"></label>
+      <label>Ground height (m above sea level)
+        <small>Height of the ground where you recorded. Leave blank if unknown (0 m is used); it matters only in hilly areas.</small>
+        <input name="elevation_m" inputmode="decimal" value="{{ form.elevation_m }}" placeholder="unknown"></label>
+      <label>When the planes passed (seconds into the recording)
+        <small>Leave blank to find them automatically. Otherwise give the moment each plane was closest (its pitch is
+          dropping fastest), e.g. <code>75, 271</code>.</small>
+        <input name="events" value="{{ form.events }}" placeholder="find automatically"></label>
+      <label>Testing only: the true location
+        <small>If you know where you recorded, enter it to see how far off the answer is. It is not used in the search.</small>
+        <span class="pair"><input name="truth_lat" inputmode="decimal" value="{{ form.truth_lat }}" placeholder="latitude">
+        <input name="truth_lon" inputmode="decimal" value="{{ form.truth_lon }}" placeholder="longitude"></span></label>
     </div>
   </fieldset>
   <details>
-    <summary>Advanced</summary>
-    <div class="grid3">
-      <label>Refinement levels <small>{{ cfg.grid.step_m|int }} m halved per level</small>
+    <summary>Advanced settings</summary>
+    <div class="grid2">
+      <label>Finer search steps <small>Each step halves the grid: 1 = 100 m (default), 3 = 25 m (slower, often sharper).</small>
         <input name="refine_levels" inputmode="numeric" value="{{ form.refine_levels or cfg.grid.refine_levels }}"></label>
-      <label>Clock window ± (s) <small>smaller if your clock is trustworthy</small>
+      <label>Clock uncertainty ± seconds <small>How far off the recording's clock might be. Phones synced to network time:
+        1 s is fine and makes single-flyover results much more reliable. Default {{ cfg.score.dt_sweep_s }} s.</small>
         <input name="dt_sweep_s" inputmode="decimal" value="{{ form.dt_sweep_s or cfg.score.dt_sweep_s }}"></label>
-      <label>Harmonics scored <input name="harmonics" value="{{ form.harmonics or cfg.score.harmonics|join(',') }}"></label>
+      <label>Engine harmonics to use <small>1 = the main tone only. 1,2,3 also uses the overtones, which can help when they are clearly visible.</small>
+        <input name="harmonics" value="{{ form.harmonics or cfg.score.harmonics|join(',') }}"></label>
+      <label>Terrain file (GeoTIFF) on this computer <small>Optional elevation map, used instead of a single ground height.</small>
+        <input name="dem_path" value="{{ form.dem_path }}" placeholder="data/dem/mosaic.tif"></label>
     </div>
   </details>
   {% include "_attest.html" %}
   <button class="primary" type="submit">Run locate</button>
+  <p class="hint">Runs in the background; you'll see its progress and then the result.</p>
 </form>
 
 {# ------------------------------------------------------------------ RECORD #}
 <section class="card panel {{ 'on' if tab == 'record' }}" data-panel="record" id="recorder">
-  <p class="muted">Records from this computer's microphone with echo cancellation, noise suppression and automatic gain
-  switched off (they would erase the low engine tones). The start time comes from this computer's clock, so keep it
-  synced. Recordings are saved on this machine and appear in the Locate and Measure forms.</p>
+  <p class="intro">Record outside, ideally somewhere light planes fly over (near a small airport or a flight-training area),
+  and keep recording through at least one full flyover (about a minute either side of the loudest moment). Two or more
+  flyovers in one recording make the answer much more precise. The time is taken from this computer's clock, which is
+  why the matching flight data can be found later.</p>
+  <p class="hint">Echo cancellation, noise suppression and automatic gain are switched off: they would erase the low engine hum.
+  Built-in laptop microphones cut low sounds; an external or phone microphone usually does better.</p>
   <div class="grid3">
     <label>Microphone <select id="rec-device"><option value="">default microphone</option></select></label>
     <label>Label <small>optional</small><input id="rec-label" maxlength="40" placeholder="backyard"></label>
@@ -125,7 +178,16 @@
 
 {# ------------------------------------------------------------------ DATA #}
 <section class="card panel {{ 'on' if tab == 'data' }}" data-panel="data">
-  <h2>Data library</h2>
+  <p class="intro">Flight data says where every plane was, second by second. The tool needs data for the <b>same time
+  and area</b> as your recording. There are three ways to get it:</p>
+  <ul class="ways">
+    <li><b>Rehydrate a past day</b>: download one or more days from the free adsb.lol archive for an area, up to a
+      whole state such as Florida. Good for recordings already made.</li>
+    <li><b>Collect live</b>: record flight positions as they happen, from your own ADS-B receiver (best) or the adsb.lol
+      website. Start it before you go out to record.</li>
+    <li><b>Import receiver logs</b>: files saved by your own tar1090 / readsb receiver.</li>
+  </ul>
+  <h2>Your flight data</h2>
   {% if datasets %}
   <table class="datasets">
     <thead><tr><th>Dataset</th><th>Source</th><th>Covers (UTC)</th><th>Aircraft</th><th>Rows</th><th></th></tr></thead>
@@ -209,7 +271,9 @@
 {# ------------------------------------------------------------------ MEASURE #}
 <form class="card panel {{ 'on' if tab == 'measure' }}" data-panel="measure" method="post" action="{{ url_for('submit_measure') }}" enctype="multipart/form-data">
   <input type="hidden" name="tab" value="measure">
-  <p class="muted">Detects flyovers and fits each Doppler curve (f0, speed, closest distance, time of closest approach). No ADS-B needed.</p>
+  <p class="intro">A quick check of a recording on its own, with no flight data needed: finds each plane passing and estimates its engine
+  pitch, speed, closest distance and the moment it was closest. Useful to see whether a recording has usable flyovers
+  before going further.</p>
   <div class="grid2">
     <label>From your recordings
       <select name="recording" data-toggles="audio-upload-m">
@@ -226,7 +290,8 @@
 {# ------------------------------------------------------------------ SYNTH #}
 <form class="card panel {{ 'on' if tab == 'synth' }}" data-panel="synth" method="post" action="{{ url_for('submit_synth') }}">
   <input type="hidden" name="tab" value="synth">
-  <p class="muted">Generates a synthetic flyover (known location) and runs the full pipeline on it. About 15 s per seed.</p>
+  <p class="intro">A self-test with made-up data: generates a fake flyover at a known spot and checks the tool finds it. About 15 s per run;
+  each "seed" is a different random scenario.</p>
   <label class="narrow">Seeds <input name="seeds" value="{{ form.seeds or '1,2,3' }}"></label>
   <button class="primary" type="submit">Run demo</button>
 </form>

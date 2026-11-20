@@ -34,7 +34,7 @@ def test_index_renders(client):
     r = c.get("/")
     assert r.status_code == 200
     html = r.get_data(as_text=True)
-    assert "I own this recording" in html and 'name="adsb"' in html
+    assert "I made this recording" in html and "Get flight data" in html and 'name="adsb"' in html
     import re
 
     # no third-party resources: every script/stylesheet/image is served by this app
@@ -72,7 +72,7 @@ def test_synth_job_end_to_end_and_file_safety(client):
     s = _wait(c, job_id)
     assert s["state"] == "done", s
     page = c.get(f"/jobs/{job_id}").get_data(as_text=True)
-    assert "Best location" in page and "Error vs known location" in page
+    assert "Most likely location" in page and "Distance from the true location" in page and "What this means" in page
     rep = c.get(f"/jobs/{job_id}/files/out/report.md")
     assert rep.status_code == 200 and "<table>" in rep.get_data(as_text=True)
     assert c.get(f"/jobs/{job_id}/files/out/heatmap.png").status_code == 200

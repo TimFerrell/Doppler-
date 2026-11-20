@@ -8,19 +8,30 @@
     <span class="state {{ job.state }}" id="state">{{ job.state }}</span>
   </div>
   <p class="muted">Created {{ job.created|ts }} · ran {{ job|dur }}{% if job.state == 'done' %} · <a href="{{ url_for('job_zip', job_id=job.id) }}">download all results (.zip)</a>{% endif %}</p>
+  <p class="now" id="now" {% if not progress.now %}hidden{% endif %}>{{ progress.now or '' }}</p>
+  <div class="progressbar" id="pbar" {% if progress.percent is none or job.state == 'done' %}hidden{% endif %}><span style="width:{{ progress.percent or 0 }}%"></span></div>
+  <ol class="progress" id="progress">
+    {% for st in progress.steps %}<li class="{{ 'done' if st.done else ('active' if st.active else '') }}"><span class="label">{{ st.label }}</span>{% if st.done and st.detail %}<span class="detail">{{ st.detail }}</span>{% elif st.active and st.active_detail %}<span class="detail">{{ st.active_detail }}</span>{% endif %}</li>{% endfor %}
+  </ol>
   <div class="alert" id="error" {% if not job.error %}hidden{% endif %}>{{ job.error }}</div>
+  {% if job.state == 'failed' %}<p class="hint">Something went wrong; the technical log below says what. Common causes: the flight data does not
+    cover the recording's date or area, no plane was loud enough in the recording, or the recording has no start time and the
+    flight data covers many hours.</p>{% endif %}
   {% for w in job.warnings or [] %}<div class="note">{{ w }}</div>{% endfor %}
-  <details {% if job.state in ('queued', 'running', 'failed') %}open{% endif %}>
-    <summary>Log</summary>
+  <details {% if job.state == 'failed' %}open{% endif %}>
+    <summary>Technical log</summary>
     <pre class="log" id="log">loading…</pre>
   </details>
 </section>
 
 {% if meas %}
 <section class="card">
-  <h2>Measured flyovers</h2>
+  <h2>Planes heard in the recording</h2>
+  <p class="hint">One row per flyover. “Closest at” is when the plane was nearest (seconds into the recording); the engine tone is
+  its pitch without the Doppler shift; speed and closest distance come from the shape of the pitch curve; a small fit error
+  (well under 1 Hz) means a clean, usable flyover.</p>
   <table class="num">
-    <thead><tr><th>#</th><th>heard CPA (s)</th><th>f0 (Hz)</th><th>speed (m/s)</th><th>closest distance (m)</th><th>fit RMS (Hz)</th><th>ok</th></tr></thead>
+    <thead><tr><th>#</th><th>Closest at (s)</th><th>Engine tone (Hz)</th><th>Speed (m/s)</th><th>Closest distance (m)</th><th>Fit error (Hz)</th><th>Usable</th></tr></thead>
     <tbody>{% for e in meas.events %}
       <tr><td>{{ loop.index }}</td><td>{{ '%.2f'|format(e.t_cpa_heard) }}</td><td>{{ '%.2f'|format(e.f0) }}</td>
         <td>{{ '%.1f'|format(e.v) }}</td><td>{{ '%.0f'|format(e.d) }}</td><td>{{ '%.3f'|format(e.rms_hz) }}</td><td>{{ '✓' if e.success else '✗' }}</td></tr>
@@ -38,10 +49,40 @@
   </div>
   {% if r.top %}
   <div class="stats">
-    <div><span class="k">Best location</span><span class="v mono">{{ '%.6f'|format(r.top.lat) }}, {{ '%.6f'|format(r.top.lon) }}</span></div>
-    {% if r.truth_err %}<div><span class="k">Error vs known location</span><span class="v">{{ r.truth_err }} m</span></div>{% endif %}
-    {% if r.top.margin is not none %}<div><span class="k">Margin over next flight pair</span><span class="v">{{ '%.1f'|format(100 * r.top.margin) }} %</span></div>{% endif %}
-    <div><span class="k">Flights</span><span class="v mono small">{{ r.top.combo }}</span></div>
+    <div><span class="k">Most likely location</span><span class="v mono">{{ '%.6f'|format(r.top.lat) }}, {{ '%.6f'|format(r.top.lon) }}</span>
+      <a class="small" href="https://www.openstreetmap.org/?mlat={{ '%.6f'|format(r.top.lat) }}&amp;mlon={{ '%.6f'|format(r.top.lon) }}#map=16/{{ '%.6f'|format(r.top.lat) }}/{{ '%.6f'|format(r.top.lon) }}" target="_blank" rel="noreferrer">open in OpenStreetMap ↗</a></div>
+    {% if r.truth_err %}<div><span class="k">Distance from the true location</span><span class="v">{{ r.truth_err }} m</span></div>{% endif %}
+    <div><span class="k">Flyovers used</span><span class="v">{{ r.n_events }}</span></div>
+    {% if r.top.margin is not none %}<div><span class="k">Lead over the next-best set of flights</span><span class="v">{{ '%.0f'|format(100 * r.top.margin) }} %</span></div>{% endif %}
+  </div>
+  <div class="explain">
+    <h3>What this means</h3>
+    <ul>
+      <li>The tool tried every spot in the search circle and asked: <i>if the recording had been made here, would the real
+        planes overhead have sounded like this?</i> The <b>most likely location</b> is the spot whose predicted pitch curves
+        best match the recording.</li>
+      {% if r.top.margin is not none %}
+      <li>{% if r.top.margin >= 0.2 %}<b>Confident about which planes were heard.</b> The flights that best explain the recording beat any
+        other choice of flights by a wide margin ({{ '%.0f'|format(100 * r.top.margin) }} %).
+        {% elif r.top.margin >= 0.05 %}<b>Fairly confident about which planes were heard</b> ({{ '%.0f'|format(100 * r.top.margin) }} % lead),
+        but check the runner-up in the full report.
+        {% else %}<b>Not confident:</b> another set of flights explains the recording almost as well ({{ '%.0f'|format(100 * r.top.margin) }} % lead).
+        Treat this answer with caution.{% endif %}</li>
+      {% endif %}
+      {% if r.n_events == 1 %}
+      <li><b>Only one flyover was used</b>, so the answer is reliable <i>across</i> the plane's path but much less so
+        <i>along</i> it: spots up to a few hundred metres along the flight path score almost the same (on the map, a stretched band of
+        bright cells). A recording with a second flyover, or a trustworthy clock (Advanced → clock uncertainty 1 s), pins it down.</li>
+      {% else %}
+      <li><b>{{ r.n_events }} flyovers were combined.</b> Each one alone only narrows the location to a band along its plane's path;
+        where the bands cross is the answer (the bright crossing on the map). In tests, this is typically within 10–100 m.</li>
+      {% endif %}
+      <li>A separate bright patch elsewhere on the map is a <b>look-alike spot</b>, often the mirror image on the other side of a
+        flight path, where the planes would have sounded similar. The full report gives how far it fell behind.</li>
+      <li>On the map, brighter cells score higher. Thick blue lines are the flights that produced the answer; thin grey lines are other
+        flights that were tried. Below, “overlay” images show each flyover's sound with the curve predicted at the best spot drawn on
+        top: a good result follows the bright line closely.</li>
+    </ul>
   </div>
   {% endif %}
   <div class="mapwrap">

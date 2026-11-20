@@ -38,6 +38,83 @@ class FormError(ValueError):
     pass
 
 
+def job_progress(kind: str, state: str, log: str) -> dict:
+    """Human-readable stages of a job, derived from its log."""
+    def has(pat):
+        return re.search(pat, log, re.M) is not None
+
+    def last(pat):
+        m = re.findall(pat, log, re.M)
+        return m[-1] if m else None
+
+    steps: list[dict] = []
+
+    def step(label, done, active_detail=None, detail=None):
+        steps.append({"label": label, "done": bool(done), "detail": detail, "active_detail": active_detail})
+
+    pct = None
+    if kind == "locate":
+        if "ingest-adsb" in log:
+            step("Read the uploaded flight logs", has(r"^\$ dopplergeo .* locate "),
+                 detail=(f"{last(r'rows_out: (\d+)')} positions" if last(r"rows_out: (\d+)") else None))
+        step("Load the recording and compute its spectrogram", has(r"\[spectrogram\]"),
+             detail=last(r"\[spectrogram\] in=([\d.]+ s) audio") and f"{last(r'\[spectrogram\] in=([\d.]+) s audio')} s of audio")
+        ev = last(r"\[events\] in=- out=(\d+)")
+        step("Find the planes passing in the audio", ev is not None,
+             detail=(f"{ev} flyover{'s' if ev != '1' else ''} found" if ev else None))
+        rows = last(r"ADS-B rows in the search window: (\d+) \((\d+) aircraft\)")
+        jet = re.findall(r"\[jet filter \(flights\)\] in=(\d+) out=(\d+)", log)
+        step("Load flight data for this area and time, drop jets", bool(jet),
+             detail=(f"{jet[-1][1]} of {jet[-1][0]} flights are not known jets" if jet else None))
+        nco = last(r"\[flight combinations\] in=- out=(\d+)")
+        done_co = len(re.findall(r": refine L\d+\]", log)) if nco else 0
+        n_lvl = max(1, len(set(re.findall(r": refine (L\d+)\]", log))) or 1)
+        tot = int(nco) if nco else 0
+        finished = has(r"^#1: ") or has(r"^report: ")
+        if tot:
+            per = min(tot, len(re.findall(r": near-track points\]", log)))
+            pct = int(100 * per / tot) if not finished else 100
+        step("Score every candidate spot against every matching flight", finished,
+             active_detail=(f"flight combination {min(tot, len(re.findall(r': near-track points]', log)))} of {tot}"
+                            if tot else None),
+             detail=(f"{tot} flight combination{'s' if tot != 1 else ''} tried" if tot else None))
+        step("Rank the spots and write the report", finished and state == "done")
+    elif kind == "rehydrate":
+        dl = re.findall(r"downloaded ([\d.]+) / ([\d.]+) GB", log)
+        days = re.findall(r"^day: '(\d{4}-\d{2}-\d{2})'", log, re.M)
+        cur = last(r"adsb\.lol (\d{4}-\d{2}-\d{2}) \S+: \d+ part")
+        if dl:
+            pct = 100 if state == "done" else int(100 * float(dl[-1][0]) / float(dl[-1][1]))
+        step("Find the day's archive on adsb.lol", cur is not None or bool(days))
+        step("Download the whole day and keep only aircraft inside the area", state == "done",
+             active_detail=(f"day {cur}: {dl[-1][0]} of {dl[-1][1]} GB" if dl and cur else None),
+             detail=(f"{len(days)} day(s) done" if days else None))
+        rows = re.findall(r"^rows_out: (\d+)", log, re.M)
+        step("Save to your flight data", state == "done",
+             detail=(f"{sum(int(r) for r in rows):,} positions saved" if rows else None))
+    elif kind in ("import",):
+        step("Read and convert the receiver logs", state == "done",
+             detail=(f"{last(r'rows_out: (\d+)')} positions" if last(r"rows_out: (\d+)") else None))
+    elif kind == "measure":
+        step("Load the recording and compute its spectrogram", has(r"detect:") or has(r"^events:"))
+        step("Find and measure each flyover", state == "done")
+    elif kind == "synth":
+        seeds = re.findall(r"^seed (\d+): #1 error ([\d.]+) m", log, re.M)
+        step("Generate test scenarios and locate them", state == "done",
+             detail=(", ".join(f"seed {a}: {b} m off" for a, b in seeds) if seeds else None))
+    active = None
+    if state in ("queued", "running"):
+        for st in steps:
+            if not st["done"]:
+                st["active"] = True
+                active = st
+                break
+    now = ("Waiting for the job ahead of it to finish." if state == "queued" else
+           (active["label"] + (f" ({active['active_detail']})" if active and active.get("active_detail") else "") + "…"
+            if active else "Finishing…") if state == "running" else None)
+    return {"steps": steps, "percent": pct, "now": now}
+
+
 def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | None = None,
                max_upload_mb: int = 4096, library_dir: str | Path = "data/adsb/library",
                recordings_dir: str | Path = "data/audio/recordings", scheduler: bool = True) -> Flask:
@@ -620,6 +697,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             bp = run / "best_per_combination.csv"
             if bp.exists():
                 b = pd.read_csv(bp)
+                item["n_events"] = len([c for c in b.columns if c.startswith("score_e")])
                 if len(b):
                     r = b.iloc[0]
                     item["top"] = {"lat": float(r["lat"]), "lon": float(r["lon"]), "score": float(r["score"]),
@@ -639,7 +717,9 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         mp = d / "out" / "measurements.yaml"
         if mp.exists():
             meas = yaml.safe_load(mp.read_text())
-        return render_template("job.html", job=j, results=results(d), meas=meas)
+        log = (d / "job.log").read_text(errors="replace") if (d / "job.log").exists() else ""
+        return render_template("job.html", job=j, results=results(d), meas=meas,
+                               progress=job_progress(j["kind"], j["state"], log))
 
     @app.get("/jobs/<job_id>/status.json")
     def job_status(job_id):
@@ -648,7 +728,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         text = log.read_text(errors="replace") if log.exists() else ""
         lines = [ln for ln in text.splitlines() if "font_manager" not in ln]
         return jsonify({"state": j["state"], "error": j["error"], "warnings": j.get("warnings", []),
-                        "log": "\n".join(lines[-400:])})
+                        "log": "\n".join(lines[-400:]), "progress": job_progress(j["kind"], j["state"], text)})
 
     @app.get("/jobs/<job_id>/candidates.json")
     def job_candidates(job_id):
