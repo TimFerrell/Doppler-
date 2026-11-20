@@ -195,7 +195,8 @@
       layer = L.geoJSON(g, {pane: 'data', style: {color: css('--accent'), weight: 1.2, opacity: 0.7},
         onEachFeature: (ft, l) => l.bindTooltip(`${ft.properties.icao24}${ft.properties.type_code ? ' · ' + ft.properties.type_code : ''}`, {sticky: true})}).addTo(map);
       if (g.features.length) map.fitBounds(layer.getBounds(), {padding: [10, 10]});
-      el.closest('.panel').querySelector('#datamap-note').textContent = `${name}: ${g.features.length} aircraft tracks shown.`;
+      el.closest('.panel').querySelector('#datamap-note').textContent = g.total_flights > g.features.length ?
+        `${name}: ${g.features.length} of ${g.total_flights} flight tracks shown (preview limit).` : `${name}: ${g.features.length} flight tracks shown.`;
     };
     document.querySelectorAll('.preview-ds').forEach(b => b.addEventListener('click', () => show(b.dataset.name)));
     document.querySelectorAll('.use-view').forEach(b => b.addEventListener('click', () => {

@@ -588,7 +588,9 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
 
         df = adsb.read_table(lib.path(name))
         feats = []
-        for (icao, fid), g in df.groupby(["icao24", "flight_id"]):
+        groups = df.groupby(["icao24", "flight_id"])
+        total = groups.ngroups
+        for (icao, fid), g in groups:
             g = g.sort_values("time")
             step = max(1, len(g) // 200)
             g = g.iloc[::step]
@@ -597,7 +599,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                           "geometry": {"type": "LineString", "coordinates": g[["lon", "lat"]].round(5).values.tolist()}})
             if len(feats) >= 3000:
                 break
-        return jsonify({"type": "FeatureCollection", "features": feats})
+        return jsonify({"type": "FeatureCollection", "features": feats, "total_flights": int(total)})
 
     # ------------------------------------------------------------------ job views
     def get_job(job_id):
