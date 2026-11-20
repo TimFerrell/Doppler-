@@ -8,9 +8,17 @@
   const levelEl = $('rec-level'), devSel = $('rec-device'), canvas = $('rec-spec'), ctx2d = canvas.getContext('2d');
   let ac = null, stream = null, node = null, src = null, analyser = null, chunks = [], nSamples = 0, t0 = null, raf = null;
 
-  if (!navigator.mediaDevices || !window.AudioContext) {
-    msg.textContent = 'This browser cannot record audio here (needs a secure context such as http://127.0.0.1).';
-    startBtn.disabled = true;
+  const monBtn = $('rec-monitor'), toneEl = $('rec-tone');
+  let saving = true;
+  if (!window.isSecureContext || !navigator.mediaDevices || !window.AudioContext) {
+    const box = $('rec-insecure'), port = box.dataset.httpsPort;
+    const url = port ? `https://${location.hostname}:${port}${location.pathname}?tab=record` : null;
+    box.innerHTML = '<b>The microphone is blocked on this page.</b> Browsers only allow it on secure (https) pages or on the ' +
+      'computer running the server. ' + (url ? `Open <a href="${url}">${url}</a> instead: your browser will warn about the ` +
+      'certificate once (it is this server\'s own self-signed one); choose to continue, and recording will work.'
+      : 'Ask for the server to be started with https enabled.') + ' Importing a phone video below works without this.';
+    box.hidden = false;
+    startBtn.disabled = true; monBtn.disabled = true;
     return;
   }
 
@@ -27,7 +35,8 @@
 
   const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-  async function start() {
+  async function start(save = true) {
+    saving = save;
     msg.textContent = '';
     const constraints = {audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1}};
     if (devSel.value) constraints.audio.deviceId = {exact: devSel.value};
@@ -62,7 +71,8 @@
       const s = new Int16Array(f.length);
       let sum = 0;
       for (let i = 0; i < f.length; i++) { const v = Math.max(-1, Math.min(1, f[i])); s[i] = v * 32767; sum += v * v; }
-      chunks.push(s); nSamples += f.length;
+      if (saving) chunks.push(s);
+      nSamples += f.length;
       const rms = Math.sqrt(sum / f.length), db = 20 * Math.log10(rms + 1e-9);
       levelEl.style.width = Math.max(0, Math.min(100, (db + 70) * 100 / 70)) + '%';
       levelEl.classList.toggle('clip', rms > 0.7);
@@ -70,9 +80,10 @@
     };
     ctx2d.fillStyle = '#000'; ctx2d.fillRect(0, 0, canvas.width, canvas.height);
     draw();
-    startBtn.disabled = true; stopBtn.disabled = false; devSel.disabled = true;
-    root.classList.add('recording');
-    msg.textContent = `Recording at ${ac.sampleRate} Hz…`;
+    startBtn.disabled = true; monBtn.disabled = true; stopBtn.disabled = false; devSel.disabled = true;
+    stopBtn.textContent = saving ? '■ Stop & save' : '■ Stop';
+    root.classList.add(saving ? 'recording' : 'monitoring');
+    msg.textContent = saving ? `Recording at ${ac.sampleRate} Hz…` : 'Live view: listening, nothing is saved.';
   }
 
   // scrolling spectrogram, 0-500 Hz: 1 px per 100 ms (~90 s across), each column normalised to its
@@ -88,6 +99,10 @@
     const lo = Math.ceil(20 / hzPerBin), top = Math.floor(500 / hzPerBin);
     const col = Array.from(fb.subarray(lo, top)).sort((a, b) => a - b);
     const med = col[col.length >> 1];
+    // strongest tone in the engine band (60-300 Hz), shown when it stands well above the noise
+    let kmax = Math.ceil(60 / hzPerBin), vmax = -1e9;
+    for (let k = kmax; k <= Math.floor(300 / hzPerBin); k++) if (fb[k] > vmax) { vmax = fb[k]; kmax = k; }
+    toneEl.textContent = vmax - med > 12 ? `strongest tone ${(kmax * hzPerBin).toFixed(0)} Hz (${(vmax - med).toFixed(0)} dB above noise)` : 'no clear tone';
     ctx2d.drawImage(canvas, -1, 0);
     for (let y = 0; y < H; y++) {
       const k = Math.floor((1 - y / H) * top);
@@ -129,6 +144,15 @@
     stopBtn.disabled = true;
     if (pending) return upload();
     cancelAnimationFrame(raf);
+    if (!saving) {
+      stream.getTracks().forEach(t => t.stop());
+      await ac.close();
+      root.classList.remove('monitoring');
+      startBtn.disabled = false; monBtn.disabled = false; devSel.disabled = false;
+      stopBtn.textContent = '■ Stop & save'; toneEl.textContent = ''; levelEl.style.width = '0';
+      msg.textContent = 'Live view stopped.';
+      return;
+    }
     const sr = ac.sampleRate, label = $('rec-label').value.trim();
     const dev = stream.getAudioTracks()[0];
     const devLabel = dev ? dev.label : '';
@@ -145,7 +169,8 @@
     return upload();
   }
 
-  startBtn.addEventListener('click', start);
+  startBtn.addEventListener('click', () => start(true));
+  monBtn.addEventListener('click', () => start(false));
   stopBtn.addEventListener('click', stop);
   window.addEventListener('beforeunload', e => { if (root.classList.contains('recording') || pending) { e.preventDefault(); e.returnValue = ''; } });
 })();

@@ -305,7 +305,25 @@ def cmd_serve(args, cfg) -> int:
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning("serving on %s: anyone who can reach this address can upload audio and see results", args.host)
     app = create_app(args.jobs_dir, args.config, args.max_upload_mb, args.library_dir, args.recordings_dir)
+    app.config["HTTPS_PORT"] = args.https_port or None
     print(f"dopplergeo web interface: http://{args.host}:{args.port}/  (jobs in {args.jobs_dir})")
+    if args.https_port:
+        # second listener over https (self-signed): browsers allow the microphone only on secure pages
+        import threading
+
+        from werkzeug.serving import make_server
+
+        from .web.tls import ensure_cert
+
+        try:
+            cert, key = ensure_cert(Path(args.jobs_dir).parent / "tls")
+            srv = make_server(args.host, args.https_port, app, threaded=True, ssl_context=(str(cert), str(key)))
+            threading.Thread(target=srv.serve_forever, daemon=True, name="https").start()
+            print(f"                     https://{args.host}:{args.https_port}/  (self-signed: accept the warning once; "
+                  "needed for the microphone from other machines)")
+        except Exception as e:  # noqa: BLE001 - https is optional; http keeps working
+            log.warning("https listener not started: %s", e)
+            app.config["HTTPS_PORT"] = None
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
     return 0
 
@@ -392,6 +410,7 @@ def main(argv=None) -> int:
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--jobs-dir", default="data/out/web")
     s.add_argument("--max-upload-mb", type=int, default=4096)
+    s.add_argument("--https-port", type=int, default=8766, help="also serve https (self-signed) here; 0 disables")
     s.add_argument("--library-dir", default="data/adsb/library", help="ADS-B dataset library")
     s.add_argument("--recordings-dir", default="data/audio/recordings", help="microphone recordings")
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dopplergeo"
-version = "0.1.0"
+version = "0.3.0"
 description = "Acoustic aircraft Doppler geolocation of operator-owned recordings against ADS-B tracks"
 requires-python = ">=3.12"
 

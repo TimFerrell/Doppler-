@@ -35,7 +35,9 @@
     map.getPane('base').style.pointerEvents = 'none';
     map.getPane('lines').style.pointerEvents = 'none';
 
-    const land = css('--map-land'), line = css('--map-line'), cline = css('--map-county');
+    // colours come from the map element's own CSS variables, so a container (e.g. the dark live panel) can restyle it
+    const cs = getComputedStyle(el), cv = n => cs.getPropertyValue(n).trim() || css(n);
+    const land = cv('--map-land'), line = cv('--map-line'), cline = cv('--map-county');
     loadAtlas().then(a => {
       L.geoJSON(a.nation, {pane: 'base', interactive: false,
         style: {color: line, weight: 1.2, fillColor: land, fillOpacity: 1}}).addTo(map);
@@ -54,7 +56,7 @@
         let n = 0;
         for (const [name, lat, lon, pop] of p.places) {
           if (pop < th || !b.contains([lat, lon])) continue;
-          L.circleMarker([lat, lon], {pane: 'top', radius: 2.5, weight: 0, fillColor: css('--map-place'), fillOpacity: 1,
+          L.circleMarker([lat, lon], {pane: 'top', radius: 2.5, weight: 0, fillColor: cv('--map-place'), fillOpacity: 1,
                                       interactive: false})
             .bindTooltip(name, {permanent: true, direction: 'right', className: 'placelabel', offset: [4, 0]})
             .addTo(placeLayer);

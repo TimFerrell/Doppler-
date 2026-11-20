@@ -91,7 +91,7 @@ def _worker_run(r_obs):
 
 
 def score_points(lat, lon, elev: geo.Elevation, tracks: list[adsb.Track], events: list[Event], c: float, cfg: dict,
-                 time_ref: str, audio_start: float | None = None) -> pd.DataFrame:
+                 time_ref: str, audio_start: float | None = None, on_batch=None) -> pd.DataFrame:
     """Locked multi-event score for each candidate point.
 
     Event 1: dt (+-dt_sweep) and df0 sweeps. Events i>1: placed at
@@ -118,9 +118,19 @@ def score_points(lat, lon, elev: geo.Elevation, tracks: list[adsb.Track], events
             warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
             with ProcessPoolExecutor(workers, mp_context=mp.get_context(method), initializer=_worker_init,
                                      initargs=(payload,)) as ex:
-                outs = list(ex.map(_worker_run, batches))
+                outs = []
+                for o in ex.map(_worker_run, batches):  # results arrive in order: stream them as they finish
+                    k0 = len(outs) * bs
+                    outs.append(o)
+                    if on_batch:
+                        on_batch(lat[k0:k0 + len(o[0])], lon[k0:k0 + len(o[0])], o[0].sum(1))
     else:
-        outs = [_score_batch(b, tracks, events, c, cfg, time_ref, audio_start) for b in batches]
+        outs = []
+        for k, b in enumerate(batches):
+            o = _score_batch(b, tracks, events, c, cfg, time_ref, audio_start)
+            outs.append(o)
+            if on_batch:
+                on_batch(lat[k * bs:k * bs + len(b)], lon[k * bs:k * bs + len(b)], o[0].sum(1))
     per = np.concatenate([o[0] for o in outs])
     dfs = np.concatenate([o[1] for o in outs])
     dt1 = np.concatenate([o[2] for o in outs])
@@ -162,7 +172,10 @@ def candidate_tracks_per_event(tracks, events, proj, region_radius_m, cfg, audio
 
 def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, float], radius_m: float,
            elev: geo.Elevation, c: float, cfg: dict, time_ref: str, audio_start: float | None,
-           slog: StageLog) -> tuple[pd.DataFrame, gridmod.Grid]:
+           slog: StageLog, live=None) -> tuple[pd.DataFrame, gridmod.Grid]:
+    from .live import LiveFeed
+
+    live = live or LiveFeed(None)
     g = cfg["grid"]
     step = float(g["step_m"])
     audible = float(g["audible_radius_m"])
@@ -179,12 +192,15 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
     proj = base.proj
     slog.count("grid", "-", len(base), f"{step:.0f} m step, radius {radius_m / 1000:.1f} km"
                + (f" (coarse start for a large area; {levels} refinement levels)" if extra else ""))
+    live.emit("search", lat=center[0], lon=center[1], radius_m=radius_m, step_m=step, points=len(base), levels=levels)
     per_event = candidate_tracks_per_event(tracks, events, proj, radius_m, cfg, audio_start)
+    live.tracks(per_event)
     for i, lst in enumerate(per_event):
         slog.count(f"qualifying tracks e{i + 1}", len(tracks), len(lst),
                    ", ".join(f"{t.icao24}/{t.key}" for t, _, _ in lst))
     combos = [cb for cb in itertools.product(*per_event) if len({t.key for t, _, _ in cb}) == len(cb)]
     slog.count("flight combinations", "-", len(combos))
+    live.emit("combos", n=len(combos))
     if not combos:
         raise RuntimeError("no qualifying flight combination for the detected events")
     results = []
@@ -198,11 +214,16 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
             sub_tracks.append(st if st is not None else tr)
         pts = base.subset(mask)
         slog.count(f"combo {name}: near-track points", len(base), len(pts), f"within {audible / 1000:.0f} km")
+        live.emit("combo", i=ci, n=len(combos), name=name, keys=[t.key for t, _, _ in cb], points=len(pts), step_m=step)
         if len(pts) == 0:
             continue
+
+        def on_batch(la_, lo__, sc_, _ci=ci):
+            live.scores(_ci, la_, lo__, sc_)
+
         with slog.timer("scoring"):
             la, lo_ = pts.latlon()
-            res = score_points(la, lo_, elev, sub_tracks, events, c, cfg, time_ref, audio_start)
+            res = score_points(la, lo_, elev, sub_tracks, events, c, cfg, time_ref, audio_start, on_batch=on_batch)
         res["x"], res["y"], res["stage"], res["step_m"] = pts.x, pts.y, 0, step
         res["combo"] = name
         stage_res = [res]
@@ -212,9 +233,10 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
             top = cur.nlargest(int(g["refine_top_n"]), "score")
             rg = gridmod.refine(proj, top["x"].to_numpy(), top["y"].to_numpy(), cur_step)
             cur_step = rg.step
+            live.emit("refine", combo=ci, level=lvl + 1, levels=levels, step_m=cur_step, points=len(rg))
             with slog.timer("scoring"):
                 la, lo_ = rg.latlon()
-                r2 = score_points(la, lo_, elev, sub_tracks, events, c, cfg, time_ref, audio_start)
+                r2 = score_points(la, lo_, elev, sub_tracks, events, c, cfg, time_ref, audio_start, on_batch=on_batch)
             r2["x"], r2["y"], r2["stage"], r2["step_m"] = rg.x, rg.y, lvl + 1, cur_step
             r2["combo"] = name
             slog.count(f"combo {name}: refine L{lvl + 1}", len(top), len(rg), f"{cur_step:.0f} m step")
@@ -252,7 +274,29 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
                out_dir, c: float, events_spec="auto", time_ref: str | None = None, audio_start: float | None = None,
                truth: dict | None = None, command: str = "", attestation: str = "", inputs: list | None = None,
                title: str = "dopplergeo locate") -> dict:
-    """Audio + unified ADS-B table -> ranked candidate locations, report.md, CSV and plots."""
+    """Audio + unified ADS-B table -> ranked candidate locations, report.md, CSV and plots.
+
+    Also streams ``<out>/live.jsonl`` (see live.py) for the animated web view.
+    """
+    from .live import LiveFeed
+
+    live = LiveFeed(out_dir)
+    live.emit("start", title=title, center=list(center), radius_m=radius_m,
+              truth=({"lat": truth["lat"], "lon": truth["lon"]} if truth else None))
+    try:
+        res = _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, events_spec, time_ref,
+                          audio_start, truth, command, attestation, inputs, title)
+        live.emit("done")
+        return res
+    except BaseException as e:
+        live.emit("failed", error=f"{e}"[:500])
+        raise
+    finally:
+        live.close()
+
+
+def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, events_spec, time_ref, audio_start,
+                truth, command, attestation, inputs, title) -> dict:
     from pathlib import Path
 
     from . import audio as audiomod
@@ -268,9 +312,13 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
     inputs = list(inputs or [])
     inputs.insert(0, {"name": "audio", "path": str(audio_path), "sha256": audiomod.sha256(audio_path)})
 
+    live.emit("stage", stage="audio")
     with slog.timer("audio+spectrogram"):
         x, sr = audiomod.load_audio(audio_path, int(cfg["audio"]["target_sr"]))
         spec = audiomod.spectrogram_from_config(x, sr, cfg)
+    live.spectrogram(spec, cfg, out)
+    live.emit("stage", stage="detect")
+    live.ridge(measure.extract_ridge(spec, tuple(cfg["detect"]["band_hz"])), float(cfg["measure"]["min_column_snr_db"]))
     slog.count("spectrogram", f"{len(x) / sr:.1f} s audio", f"{spec.db.shape[1]} cols x {spec.db.shape[0]} bins")
 
     detect_diag = None
@@ -283,16 +331,24 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
             meas = [measure.fit_event(spec, cfg, c, float(t), manual=True) for t in events_spec]
     bad = [i + 1 for i, m in enumerate(meas) if not m.success]
     slog.count("events", "-", len(meas), f"failed fits: {bad}" if bad else "all fits ok")
+    if detect_diag:
+        live.emit("rejected", items=detect_diag.get("rejected", []))
+    for i, m in enumerate(meas):
+        if np.isfinite(m.f0):
+            live.flyover(i, m, c)
     if not meas or bad:
         from . import report as _report
 
-        _report.write_no_events_report(out, spec, cfg, detect_diag, meas, inputs, attestation, title)
+        ov = _report.expected_overlays(spec, cfg, detect_diag, c)
+        live.emit("expected", **ov)
+        _report.write_no_events_report(out, spec, cfg, detect_diag, meas, inputs, attestation, title, c)
         if not meas:
             raise RuntimeError("no plane flyover was found in the recording; see the report for what was heard and "
                                "why each part was rejected (or give flyover times explicitly)")
         raise RuntimeError(f"curve fit failed for event(s) {bad}: {[meas[i - 1].to_dict() for i in bad]}")
     events = make_events(spec, meas, cfg)
 
+    live.emit("stage", stage="flights")
     with slog.timer("adsb+tracks"):
         n_rows = len(adsb_df)
         if cfg["adsb"]["drop_jets"]:
@@ -303,11 +359,19 @@ def run_locate(audio_path, adsb_df: pd.DataFrame, center: tuple[float, float], r
                        f"{jstats['flights_unknown_type_kept']} unknown-type")
         tracks = adsb.tracks_from_table(adsb_df, float(cfg["track"]["resample_dt_s"]), float(cfg["track"]["max_gap_s"]))
         slog.count("track segments", f"{n_rows} rows", len(tracks))
+    live.emit("flights", rows=n_rows, segments=len(tracks))
 
     elev = geo.Elevation.from_config(cfg)
+    live.emit("stage", stage="search")
     with slog.timer("search"):
-        allres, base = search(events, tracks, center, radius_m, elev, c, cfg, time_ref, audio_start, slog)
+        allres, base = search(events, tracks, center, radius_m, elev, c, cfg, time_ref, audio_start, slog, live)
+    live.scores(-1, [], [], np.array([]), final=True)
+    live.emit("stage", stage="rank")
     best, pts = rank(allres)
+    _t = pts.iloc[0]
+    live.emit("result", lat=float(_t["lat"]), lon=float(_t["lon"]), score=float(_t["score"]), combo=str(_t["combo"]),
+              margin=(float((best["score"].iloc[0] - best["score"].iloc[1]) / best["score"].iloc[0]) if len(best) > 1 else None),
+              scored=int(len(pts)))
     step = float(cfg["grid"]["step_m"])
     ru = runner_up_distinct(pts, 3 * step)
 

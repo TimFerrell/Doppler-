@@ -87,6 +87,10 @@
     lf.addEventListener('change', check); lf.addEventListener('input', check); check();
   }
 
+  // gentle warning (not a limit) for very large search areas
+  const rk = document.querySelector('input[name=radius_km]'), rw = document.getElementById('radius-warn');
+  if (rk && rw) { const f = () => { rw.hidden = !(parseFloat(rk.value) > 50); }; rk.addEventListener('input', f); f(); }
+
   // "Use in Locate" from the recordings list
   document.querySelectorAll('.use-rec').forEach(b => b.addEventListener('click', () => {
     const sel = document.querySelector('form[data-panel=locate] select[name=recording]');
@@ -170,7 +174,12 @@
           }).join('');
         }
         if (s.error) { const e = document.getElementById('error'); e.textContent = s.error; e.hidden = false; }
-        if ((state === 'queued' || state === 'running') && (s.state === 'done' || s.state === 'failed')) { location.reload(); return; }
+        if ((state === 'queued' || state === 'running') && (s.state === 'done' || s.state === 'failed')) {
+          // with the live view, let its finale play before reloading for the full results
+          const reload = () => (!document.getElementById('live') || window.__liveIdle) ? location.reload() : setTimeout(reload, 500);
+          setTimeout(reload, 300);
+          return;
+        }
         state = s.state;
         if (s.state === 'queued' || s.state === 'running') setTimeout(poll, 1500);
       } catch (e) { setTimeout(poll, 4000); }

@@ -82,8 +82,11 @@
     <div class="grid3">
       <label>Centre latitude <input name="center_lat" inputmode="decimal" value="{{ form.center_lat }}" placeholder="click the map" required></label>
       <label>Centre longitude <input name="center_lon" inputmode="decimal" value="{{ form.center_lon }}" placeholder="click the map" required></label>
-      <label>Search radius (km) <small>6–10 km is typical</small><input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
+      <label>Search radius (km) <small>6–10 km is typical; any size is allowed</small><input name="radius_km" inputmode="decimal" value="{{ form.radius_km or '6' }}" required></label>
     </div>
+    <p class="hint radius-warn" id="radius-warn" hidden>Large area: the search starts on a coarse grid and zooms in on the most promising
+      spots, so it runs longer and can miss a narrow match that falls between coarse grid points. A second flyover in the recording
+      helps most. You can watch it work in the live view.</p>
   </fieldset>
 
   <fieldset>
@@ -138,10 +141,12 @@
     <label>Label <small>optional</small><input id="rec-label" maxlength="40" placeholder="backyard"></label>
     <div class="recctl">
       <button class="primary" type="button" id="rec-start">● Record</button>
+      <button class="secondary" type="button" id="rec-monitor" title="Show the live spectrogram without saving anything">◉ Live view only</button>
       <button class="secondary" type="button" id="rec-stop" disabled>■ Stop &amp; save</button>
     </div>
   </div>
-  <div class="recstatus"><span id="rec-time">0:00</span><span class="meter"><span id="rec-level"></span></span><span id="rec-msg" class="muted"></span></div>
+  <div class="note" id="rec-insecure" data-https-port="{{ https_port or '' }}" hidden></div>
+  <div class="recstatus"><span id="rec-time">0:00</span><span class="tone" id="rec-tone"></span><span class="meter"><span id="rec-level"></span></span><span id="rec-msg" class="muted"></span></div>
   <div class="specwrap">
     <canvas id="rec-spec" width="900" height="220" aria-label="Live spectrogram, 0 to 500 Hz"></canvas>
     <span style="bottom:20%">100 Hz</span><span style="bottom:40%">200 Hz</span><span style="bottom:60%">300 Hz</span><span style="bottom:80%">400 Hz</span>
@@ -169,7 +174,8 @@
     <tbody>{% for r in recordings %}
       <tr><td><span class="mono small">{{ r.name }}</span><br><audio controls preload="none" src="{{ url_for('get_recording', name=r.name) }}"></audio></td>
         <td>{{ r.start_utc|ts if r.start_utc else '—' }}{% if r.time_source %}<br><span class="small muted">{{ r.time_source }}</span>{% endif %}</td><td>{{ r.duration_s|secs if r.duration_s else '—' }}</td>
-        <td class="actions"><button type="button" class="link use-rec" data-name="{{ r.name }}">Use in Locate</button>
+        <td class="actions"><button type="button" class="link spec-rec" data-name="{{ r.name }}">Spectrogram</button>
+          <button type="button" class="link use-rec" data-name="{{ r.name }}">Use in Locate</button>
           <a href="{{ url_for('get_recording', name=r.name) }}?download">Download</a>
           <form method="post" action="{{ url_for('delete_recording', name=r.name) }}" onsubmit="return confirm('Delete {{ r.name }}?')"><button class="link danger">Delete</button></form></td></tr>
     {% endfor %}</tbody>
@@ -325,4 +331,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='record.js') }}"></script>
+<script src="{{ url_for('static', filename='spectro.js') }}"></script>
 {% endblock %}

@@ -147,8 +147,12 @@ class Supervisor:
                 tests = [t for t in SMOKE_TESTS if (self.repo / t).exists()]
                 r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *tests],
                                    cwd=self.repo, capture_output=True, text=True, timeout=900)
+                log_path = self.state_path.with_name("updater-selftest.log")
+                log_path.write_text(f"commit {target}\n\n{r.stdout}\n{r.stderr}")
                 if r.returncode != 0:
-                    raise RuntimeError("self-test failed: " + (r.stdout.strip().splitlines() or ["?"])[-1])
+                    failed = [ln for ln in r.stdout.splitlines() if ln.startswith(("FAILED", "ERROR"))]
+                    raise RuntimeError("self-test failed: " + ("; ".join(failed[:3]) or
+                                       (r.stdout.strip().splitlines() or ["?"])[-1]) + f" (full output: {log_path.name})")
         except Exception as e:  # noqa: BLE001
             self.git("reset", "--keep", local)
             self.bad.add(target)

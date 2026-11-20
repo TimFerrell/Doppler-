@@ -350,7 +350,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             over = attestation()
             lat = fnum("center_lat", -90, 90)
             lon = fnum("center_lon", -180, 180)
-            radius = fnum("radius_km", 0.5, 200)
+            radius = fnum("radius_km", 0.1, 20000)  # no practical cap: big areas start coarse
             elev = fnum("elevation_m", -500, 9000, required=False)
             dem = request.form.get("dem_path", "").strip() or None
             if dem and not Path(dem).is_file():
@@ -523,6 +523,48 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             abort(404)
         return send_file(p, mimetype="audio/wav", as_attachment=request.args.get("download") is not None)
 
+    @app.get("/recordings/<name>/spectrogram.json")
+    def recording_spectrogram(name):
+        """Render (and cache) a 40–500 Hz spectrogram image of a recording for the viewer."""
+        try:
+            p = recording_path(name)
+        except FormError:
+            abort(404)
+        img = p.with_suffix(".spec.png")
+        meta_p = p.with_suffix(".spec.json")
+        if not img.exists() or img.stat().st_mtime < p.stat().st_mtime or not meta_p.exists():
+            from .. import audio as audiomod
+            from ..live import LiveFeed  # noqa: F401 - same rendering as the live view
+            import numpy as np
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            x, sr = audiomod.load_audio(p, int(cfg_preview["audio"]["target_sr"]))
+            spec = audiomod.spectrogram_from_config(x, sr, cfg_preview)
+            sel = (spec.freqs >= 40) & (spec.freqs <= 500)
+            S = spec.db[sel]
+            S = S[::max(1, S.shape[0] // 400), ::max(1, S.shape[1] // 3000)]
+            lo, hi = np.percentile(S, [8, 99.7])
+            plt.imsave(img, np.clip((S - lo) / max(1e-6, hi - lo), 0, 1), cmap="magma", origin="lower")
+            meta_p.write_text(json.dumps({"t0": 0.0, "t1": len(x) / sr, "f0": float(spec.freqs[sel][0]),
+                                          "f1": float(spec.freqs[sel][-1])}))
+        meta = json.loads(meta_p.read_text())
+        return jsonify({**meta, "image": url_for("recording_spectrogram_png", name=name),
+                        "audio": url_for("get_recording", name=name)})
+
+    @app.get("/recordings/<name>/spectrogram.png")
+    def recording_spectrogram_png(name):
+        try:
+            p = recording_path(name)
+        except FormError:
+            abort(404)
+        img = p.with_suffix(".spec.png")
+        if not img.exists():
+            abort(404)
+        return send_file(img, mimetype="image/png")
+
     @app.post("/recordings/<name>/delete")
     def delete_recording(name):
         try:
@@ -530,7 +572,8 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         except FormError:
             abort(404)
         p.unlink()
-        p.with_suffix(".json").unlink(missing_ok=True)
+        for suf in (".json", ".spec.png", ".spec.json"):
+            p.with_suffix(suf).unlink(missing_ok=True)
         return redirect(url_for("index", tab="record"))
 
     # ------------------------------------------------------------------ ADS-B data library
@@ -786,6 +829,26 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
             return render_template("report.html", job=j, body=html, relpath=relpath)
         return send_from_directory(d, relpath, as_attachment=request.args.get("download") is not None)
 
+    @app.get("/jobs/<job_id>/live.json")
+    def job_live(job_id):
+        j, d = get_job(job_id)
+        from ..live import read_events
+
+        try:
+            pos = max(0, int(request.args.get("pos", 0)))
+        except ValueError:
+            pos = 0
+        files = sorted((d / "out").rglob("live.jsonl"))
+        run = request.args.get("run")
+        if run:
+            files = [f for f in files if f.parent.relative_to(d).as_posix() == run]
+        if not files:
+            return jsonify({"events": [], "pos": 0, "state": j["state"], "base": None})
+        f = files[-1]
+        ev, newpos = read_events(f, pos)
+        return jsonify({"events": ev, "pos": newpos, "state": j["state"],
+                        "base": url_for("job_file", job_id=job_id, relpath=f.parent.relative_to(d).as_posix() + "/")})
+
     @app.get("/jobs/<job_id>/bundle.zip")
     def job_zip(job_id):
         j, d = get_job(job_id)
@@ -834,7 +897,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
 
     @app.context_processor
     def inject_version():
-        return {"code_version": code_version(), "updater": updater_state()}
+        return {"code_version": code_version(), "updater": updater_state(), "https_port": app.config.get("HTTPS_PORT")}
 
     if scheduler:
         sched.start()  # last: the enqueue callback needs every helper above
@@ -844,20 +907,32 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     return app
 
 
+_VERSION_CACHE: dict = {}
+
+
 def code_version() -> dict:
-    """Git commit of the running code (if it runs from a checkout)."""
+    """Version of the running code: release, build number (commit count) and commit, from the checkout."""
     import subprocess
 
-    root = Path(__file__).resolve().parents[3]
-    try:
-        out = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(root), "log", "-1", "--format=%h|%ct|%s"],
-                             capture_output=True, text=True, timeout=5).stdout.strip()
-        h, ct, subj = out.split("|", 2)
-        return {"commit": h, "time": float(ct), "subject": subj}
-    except Exception:  # noqa: BLE001 - not a checkout, or git missing
-        from .. import __version__
+    from .. import __version__
 
-        return {"commit": None, "time": None, "subject": f"dopplergeo {__version__}"}
+    # cached per process: the code a process runs cannot change under it (updates restart the web app)
+    if "v" in _VERSION_CACHE:
+        return _VERSION_CACHE["v"]
+    root = Path(__file__).resolve().parents[3]
+    v = {"version": __version__, "build": None, "commit": None, "time": None, "subject": None,
+         "label": f"v{__version__}"}
+    try:
+        g = ["git", "-c", "safe.directory=*", "-C", str(root)]
+        out = subprocess.run(g + ["log", "-1", "--format=%h|%ct|%s"], capture_output=True, text=True, timeout=5)
+        h, ct, subj = out.stdout.strip().split("|", 2)
+        n = subprocess.run(g + ["rev-list", "--count", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+        v.update(commit=h, time=float(ct), subject=subj, build=int(n) if n.isdigit() else None)
+        v["label"] = f"v{__version__} · build {v['build']} · {h}" if v["build"] else f"v{__version__} · {h}"
+    except Exception:  # noqa: BLE001 - not a checkout, or git missing
+        pass
+    _VERSION_CACHE["v"] = v
+    return v
 
 
 def updater_state() -> dict | None:

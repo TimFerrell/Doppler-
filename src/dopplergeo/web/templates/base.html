@@ -11,12 +11,14 @@
 <header class="top">
   <a class="brand" href="{{ url_for('index') }}"><span class="mark" aria-hidden="true">◠</span> dopplergeo</a>
   <span class="tag">local · offline</span>
+  <span class="verbadge" title="{{ code_version.subject or '' }}{% if code_version.time %} — committed {{ code_version.time|ts }}{% endif %}">{{ code_version.label }}</span>
+  {% if updater and updater.status not in ('up to date', 'starting') %}<span class="updbadge {{ 'warn' if updater.status in ('error', 'blocked', 'check failed') else '' }}" title="{{ updater.message }}">{{ updater.status }}</span>{% endif %}
 </header>
 <main>
 {% block body %}{% endblock %}
 </main>
 <footer class="foot">
-<p class="ver" id="ver">Version {{ code_version.commit or '?' }}{% if code_version.subject %} · “{{ code_version.subject[:70] }}”{% endif %}
+<p class="ver" id="ver">{{ code_version.label }}{% if code_version.subject %} · “{{ code_version.subject[:70] }}”{% endif %}
 {%- if updater %} · auto-update: <b>{{ updater.status }}</b>{% if updater.message %} ({{ updater.message }}){% endif %}
 {%- if updater.rebuild_recommended %} · <b>image rebuild recommended</b>{% endif %}
 {%- else %} · auto-update off (not running under <code>dopplergeo supervise</code>){% endif %}</p>Analyse only recordings you own or are explicitly authorized to analyse. Pages load no third-party

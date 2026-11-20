@@ -125,7 +125,13 @@ def write_report(out_dir: Path, ctx: dict) -> Path:
     """ctx keys: title, command, inputs[{name,path,sha256}], attestation, config, events[Measurement],
     detect_diag, stage_rows, timings, best(DataFrame), pts(DataFrame), runner_up, truth, plots, notes."""
     L = [f"# {ctx['title']}", ""]
-    L += [f"- generated: {utc(dt.datetime.now(dt.timezone.utc).timestamp())}",
+    try:
+        from .web.app import code_version
+
+        ver = code_version()["label"]
+    except Exception:  # noqa: BLE001
+        from . import __version__ as ver
+    L += [f"- generated: {utc(dt.datetime.now(dt.timezone.utc).timestamp())} by dopplergeo {ver}",
           f"- command: `{ctx.get('command', '')}`",
           f"- host: {platform.platform()}, python {platform.python_version()}", ""]
     L += ["## Authorization", "", ctx["attestation"], ""]
@@ -189,7 +195,42 @@ def write_report(out_dir: Path, ctx: dict) -> Path:
     return path
 
 
-def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, title) -> Path:
+def expected_overlays(spec, cfg, diag, c: float = 343.0) -> dict:
+    """What the detector expected to see, for drawing on the recording's spectrogram.
+
+    - ``expected``: an illustrative prop flyover (pitch curve) placed mid-recording at the strongest tone
+      actually present (or 120 Hz), with typical light-aircraft speed and distance.
+    - ``near_misses``: the curve the detector tried in each rejected stretch, with its reasons.
+    - ``band``: the frequency band searched.
+    """
+    from .measure import extract_ridge
+    from .model import straight_line_curve
+
+    lo, hi = (float(v) for v in cfg["detect"]["band_hz"])
+    rg = extract_ridge(spec, (lo, hi))
+    good = rg.snr_db >= float(cfg["measure"]["min_column_snr_db"])
+    f0 = float(np.median(rg.freq[good])) if good.sum() >= 5 else 120.0
+    f0 = min(max(f0, lo + 25), hi - 45)
+    t_a, t_b = float(spec.times[0]), float(spec.times[-1])
+    t_mid = 0.5 * (t_a + t_b)
+    v, d = 55.0, 1200.0
+    tt = np.linspace(t_a, t_b, 300)
+    ff = straight_line_curve(tt, f0, v, d, t_mid - d / c, c)
+    near = []
+    for r in (diag or {}).get("rejected", []):
+        fit = r.get("fit") or {}
+        if not all(fit.get(k) is not None for k in ("f0", "v", "d", "t_cpa_heard")):
+            continue
+        a, b = r["window_s"]
+        t = np.linspace(a, b, 200)
+        f = straight_line_curve(t, fit["f0"], fit["v"], fit["d"], fit["t_cpa_heard"] - fit["d"] / c, c)
+        near.append({"t": np.round(t, 2), "f": np.round(f, 2), "reasons": r["reasons"], "window_s": r["window_s"]})
+    return {"band": [lo, hi], "expected": {"t": np.round(tt, 2), "f": np.round(ff, 2), "f0": f0, "t_cpa": t_mid,
+                                           "v": v, "d": d},
+            "near_misses": near}
+
+
+def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, title, c: float = 343.0) -> Path:
     """Diagnostic report when no usable flyover was found: spectrogram + reasons, in plain language."""
     from .measure import extract_ridge
 
@@ -206,7 +247,20 @@ def write_no_events_report(out_dir, spec, cfg, diag, meas, inputs, attestation, 
     good = rg.snr_db >= cfg["measure"]["min_column_snr_db"]
     ax.plot(rg.times[good], rg.freq[good], ".", ms=2.5, color="#5fd3ff", alpha=0.8,
             label="strongest tone per moment (clear ones only)")
-    ax.axhspan(lo, hi, color="w", alpha=0.04)
+    ov = expected_overlays(spec, cfg, diag, c)
+    ax.axhline(lo, color="w", lw=0.8, ls=":", alpha=0.6)
+    ax.axhline(hi, color="w", lw=0.8, ls=":", alpha=0.6)
+    ax.text(spec.times[0], hi, f" searched band {lo:.0f}–{hi:.0f} Hz", color="w", fontsize=8, va="bottom", alpha=0.8)
+    e = ov["expected"]
+    ax.plot(e["t"], e["f"], "--", color="white", lw=2, alpha=0.85,
+            label="what a passing prop plane would look like here (illustration)")
+    ax.plot([e["t_cpa"]], [e["f0"]], "o", color="white", ms=7, mfc="none", mew=2)
+    ax.annotate("steepest = moment the plane is nearest", (e["t_cpa"], e["f0"]), xytext=(10, 18),
+                textcoords="offset points", color="white", fontsize=8,
+                arrowprops={"arrowstyle": "->", "color": "white", "lw": 0.8})
+    for k, nm in enumerate(ov["near_misses"]):
+        ax.plot(nm["t"], nm["f"], "--", color="#ff6b6b", lw=1.6, alpha=0.9,
+                label="closest attempt, rejected" if k == 0 else None)
     ax.set_xlabel("seconds into the recording")
     ax.set_ylabel("Hz")
     ax.set_title("What the recording contains (40–400 Hz): a passing prop plane shows as a line that slides down in pitch")

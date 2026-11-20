@@ -543,13 +543,13 @@ class ArchiveScheduler(threading.Thread):
     def __init__(self, library: Library, enqueue, interval_s: float = 3600.0, max_backfill: int = 3):
         super().__init__(daemon=True, name="archive-scheduler")
         self.library, self.enqueue, self.interval, self.max_backfill = library, enqueue, interval_s, max_backfill
-        self._stop = threading.Event()
+        self._halt = threading.Event()
         self.queued: set[tuple[str, str]] = set()
         self.last_check: float | None = None
         self.last_error: str | None = None
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
 
     def check_once(self) -> list[tuple[str, str]]:
         subs = [m for m in self.library.list() if m.get("subscribe") and m.get("request_bbox")]
@@ -573,7 +573,7 @@ class ArchiveScheduler(threading.Thread):
         return out
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             try:
                 self.check_once()
                 self.last_error = None
@@ -581,7 +581,7 @@ class ArchiveScheduler(threading.Thread):
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.warning("archive scheduler: %s", e)
             self.last_check = time.time()
-            self._stop.wait(self.interval)
+            self._halt.wait(self.interval)
 
 
 # =============================================================================== live
@@ -621,14 +621,14 @@ class Collector(threading.Thread):
             raise ValueError(f"unknown source {source!r}")
         self.library, self.dataset, self.source, self.cfg = library, dataset, source, cfg
         self.interval, self.flush_s = float(interval_s), float(flush_s)
-        self._stop = threading.Event()
+        self._halt = threading.Event()
         self.status = {"dataset": dataset, "source": source, "url": self.url, "started": time.time(),
                        "polls": 0, "errors": 0, "last_error": None, "rows_buffered": 0, "rows_written": 0,
                        "last_poll": None, "aircraft_last": 0, "running": True}
         self._seen: dict[str, float] = {}
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
 
     def _poll(self) -> list[dict]:
         req = urllib.request.Request(self.url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
@@ -652,7 +652,7 @@ class Collector(threading.Thread):
         buf: list[dict] = []
         last_flush = time.time()
         backoff = 0.0
-        while not self._stop.is_set():
+        while not self._halt.is_set():
             t0 = time.time()
             try:
                 buf += self._poll()
@@ -666,12 +666,12 @@ class Collector(threading.Thread):
                 if isinstance(e, urllib.error.HTTPError) and e.code == 429:
                     ra = e.headers.get("Retry-After") if e.headers else None
                     backoff = float(ra) if ra and ra.isdigit() else min(60.0, max(5.0, 2 * backoff))
-                    self._stop.wait(backoff)
+                    self._halt.wait(backoff)
             self.status["rows_buffered"] = len(buf)
             if buf and time.time() - last_flush >= self.flush_s:
                 self._flush(buf)
                 buf, last_flush = [], time.time()
-            self._stop.wait(max(0.0, self.interval - (time.time() - t0)))
+            self._halt.wait(max(0.0, self.interval - (time.time() - t0)))
         if buf:
             self._flush(buf)
         self.status["running"] = False

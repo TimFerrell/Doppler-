@@ -26,6 +26,33 @@
   </details>
 </section>
 
+{% if job.kind in ('locate', 'synth') %}
+<section class="card livecard" id="live" data-src="{{ url_for('job_live', job_id=job.id) }}" data-state="{{ job.state }}">
+  <div class="livehead">
+    <h2>Live analysis</h2>
+    <div class="stages" id="lv-stages">
+      <span data-st="audio">Listen</span><span data-st="detect">Find planes</span><span data-st="flights">Load flights</span><span data-st="search">Search</span><span data-st="rank">Answer</span>
+    </div>
+    {% if job.state in ('done', 'failed') %}<button type="button" class="secondary" id="lv-replay">▶ Replay</button>{% endif %}
+  </div>
+  <div class="livegrid">
+    <div class="lvspec">
+      <canvas id="lv-spec" aria-label="Spectrogram of the recording with the detected flyovers"></canvas>
+      <div class="lvcap" id="lv-speccap">Waiting for the recording…</div>
+    </div>
+    <div class="lvmap">
+      <div id="lv-map"></div>
+      <div class="lvhud">
+        <div><span id="lv-scored" class="big">0</span><small>spots scored</small></div>
+        <div><span id="lv-combos" class="big">0</span><small>flight sets</small></div>
+        <div><span id="lv-best" class="big">—</span><small>best score</small></div>
+      </div>
+    </div>
+  </div>
+  <div class="lvlog" id="lv-log" aria-live="polite"></div>
+</section>
+{% endif %}
+
 {% if meas %}
 <section class="card">
   <h2>Planes heard in the recording</h2>
@@ -102,3 +129,4 @@
 </section>
 {% endfor %}
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='live.js') }}"></script>{% endblock %}
