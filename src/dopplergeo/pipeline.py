@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from . import adsb, filters, geo, grid as gridmod, model
+from .config import speed_of_sound
 from .audio import Spectrogram
 from .measure import Measurement
 from .score import EventScorer
@@ -106,10 +107,15 @@ def score_points(lat, lon, elev: geo.Elevation, tracks: list[adsb.Track], events
     if workers > 1 and len(batches) > 1:
         payload = dict(tracks=tracks, events=events, c=c, cfg=cfg, time_ref=time_ref, audio_start=audio_start)
         import multiprocessing as mp
+        import warnings
 
-        with ProcessPoolExecutor(workers, mp_context=mp.get_context("fork"), initializer=_worker_init,
-                                 initargs=(payload,)) as ex:
-            outs = list(ex.map(_worker_run, batches))
+        # fork: workers inherit the payload without pickling and callers need no __main__ guard.
+        # Workers only run numpy on private arrays, so the fork-with-threads caveat does not bite.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*fork.*")
+            with ProcessPoolExecutor(workers, mp_context=mp.get_context("fork"), initializer=_worker_init,
+                                     initargs=(payload,)) as ex:
+                outs = list(ex.map(_worker_run, batches))
     else:
         outs = [_score_batch(b, tracks, events, c, cfg, time_ref, audio_start) for b in batches]
     per = np.concatenate([o[0] for o in outs])
@@ -130,7 +136,7 @@ def candidate_tracks_per_event(tracks, events, proj, region_radius_m, cfg, audio
     out = []
     for ev in events:
         if audio_start is not None:
-            lo = audio_start + ev.meas.t_lo - tol - audible / 343.0 - 60.0
+            lo = audio_start + ev.meas.t_lo - tol - audible / speed_of_sound(cfg) - 60.0
             hi = audio_start + ev.meas.t_hi + tol
         else:
             lo = hi = None

@@ -34,17 +34,12 @@ def parse_time(v) -> float | None:
 
 def parse_region(s: str) -> tuple[tuple[float, float], float]:
     """'center=LAT,LON,radius_km=R' -> ((lat, lon), radius_m)."""
-    try:
-        parts = dict(p.split("=", 1) for p in s.replace(" ", "").split(",radius_km="))
-    except ValueError:
-        parts = {}
-    if "center" not in s or "radius_km" not in s:
-        raise argparse.ArgumentTypeError("region must look like center=LAT,LON,radius_km=R")
-    c = s.split("center=")[1].split(",radius_km=")[0]
-    lat, lon = (float(v) for v in c.split(","))
-    r = float(s.split("radius_km=")[1])
-    del parts
-    return (lat, lon), r * 1000.0
+    s = s.replace(" ", "")
+    if not s.startswith("center=") or ",radius_km=" not in s:
+        raise ValueError(f"region {s!r} must look like center=LAT,LON,radius_km=R")
+    center, radius = s[len("center="):].split(",radius_km=")
+    lat, lon = (float(v) for v in center.split(","))
+    return (lat, lon), float(radius) * 1000.0
 
 
 def require_authorization(cfg: dict, flag: bool) -> str:

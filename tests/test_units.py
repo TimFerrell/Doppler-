@@ -37,3 +37,15 @@ def test_speed_of_sound_temperature():
     assert config.speed_of_sound(cfg) == 343.0
     cfg["physics"]["temperature_c"] = 20.0
     assert config.speed_of_sound(cfg) == pytest.approx(343.2, abs=0.1)
+
+
+def test_parse_region_and_time():
+    from dopplergeo import cli
+
+    assert cli.parse_region("center=40.5,-100.25,radius_km=12") == ((40.5, -100.25), 12000.0)
+    with pytest.raises(ValueError):
+        cli.parse_region("40,-100,12")
+    assert cli.parse_time("2024-01-01T00:00:00Z") == 1704067200.0
+    assert cli.parse_time(1.5) == 1.5
+    with pytest.raises(ValueError):
+        cli.parse_time("2024-01-01T00:00:00")  # naive timestamps are rejected (timezone discipline)
