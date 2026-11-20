@@ -86,7 +86,19 @@
     msg.textContent = saving ? `Recording at ${ac.sampleRate} Hz…` : 'Live view: listening, nothing is saved.';
   }
 
-  // scrolling spectrogram, 0-500 Hz: 1 px per 100 ms (~90 s across), each column normalised to its
+  // magma-like colour map (same look as the analysis spectrograms)
+  const MAGMA = (() => {
+    const st = [[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 253, 191]];
+    const out = [];
+    for (let i = 0; i < 256; i++) {
+      const x = i / 255 * (st.length - 1), j = Math.min(Math.floor(x), st.length - 2), f = x - j;
+      const c = st[j].map((v, q) => Math.round(v + (st[j + 1][q] - v) * f));
+      out.push(`rgb(${c[0]},${c[1]},${c[2]})`);
+    }
+    return out;
+  })();
+
+  // scrolling spectrogram, 0-500 Hz: 2 px per 100 ms (~45 s across), each column normalised to its
   // own median so engine lines stand out regardless of overall level
   let fb = null, last = 0;
   function draw(ts) {
@@ -103,13 +115,12 @@
     let kmax = Math.ceil(60 / hzPerBin), vmax = -1e9;
     for (let k = kmax; k <= Math.floor(300 / hzPerBin); k++) if (fb[k] > vmax) { vmax = fb[k]; kmax = k; }
     toneEl.textContent = vmax - med > 12 ? `strongest tone ${(kmax * hzPerBin).toFixed(0)} Hz (${(vmax - med).toFixed(0)} dB above noise)` : 'no clear tone';
-    ctx2d.drawImage(canvas, -1, 0);
+    ctx2d.drawImage(canvas, -2, 0);
     for (let y = 0; y < H; y++) {
       const k = Math.floor((1 - y / H) * top);
-      const v = Math.max(0, Math.min(1, (fb[k] - med) / 30));
-      const c = Math.floor(255 * Math.pow(v, 0.8));
-      ctx2d.fillStyle = `rgb(${c},${Math.floor(c * 0.8)},${Math.floor(40 + c * 0.4)})`;
-      ctx2d.fillRect(W - 1, y, 1, 1);
+      const v = Math.max(0, Math.min(1, (fb[k] - med + 3) / 28));
+      ctx2d.fillStyle = MAGMA[Math.floor(255 * Math.pow(v, 0.85))];
+      ctx2d.fillRect(W - 2, y, 2, 1);
     }
   }
 

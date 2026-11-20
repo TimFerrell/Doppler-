@@ -145,7 +145,7 @@
       g.setLineDash([]); g.fillStyle = 'rgba(255,255,255,.8)'; g.font = `${11 * dd}px system-ui`; g.textAlign = 'left';
       g.fillText(`searched for engine tones here (${blo}–${bhi} Hz)`, x0 + 6 * dd, Y(bhi) - 5 * dd);
       // near misses
-      E.near.forEach((nm, j) => {
+      (E.near_misses || []).forEach((nm, j) => {
         const kk = animate ? ease((now() - E.born - 600 - j * 250) / 900) : 1;
         if (kk <= 0) return;
         g.strokeStyle = '#ff6b6b'; g.lineWidth = 2 * dd; g.setLineDash([7 * dd, 5 * dd]); g.globalAlpha = kk;
