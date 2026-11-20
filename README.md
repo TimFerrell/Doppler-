@@ -20,6 +20,8 @@ exact location"*); no original code was available.
 
 ## Install
 
+Self-hosting on Unraid (Docker, auto-update from GitHub): see [docs/UNRAID.md](docs/UNRAID.md).
+
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt && pip install -e .
