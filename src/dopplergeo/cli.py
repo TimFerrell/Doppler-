@@ -273,6 +273,26 @@ def cmd_collect(args, cfg) -> int:
     return 0
 
 
+def cmd_library_register(args, cfg) -> int:
+    """Make a dataset folder filled by the CLI visible to the web UI (create/refresh its meta.json)."""
+    from . import sources
+
+    lib = sources.Library(args.library)
+    d = lib.path(args.name)
+    if not d.is_dir():
+        raise SystemExit(f"no dataset folder {d}")
+    if not lib.exists(args.name):
+        bbox = None if args.bbox in (None, "world") else [float(v) for v in args.bbox.split(",")]
+        lib.create(args.name, {"source": args.source, "kind": "archive", "request_bbox": bbox,
+                               "skip_jets": bool(args.skip_jets), "days": [], "subscribe": bool(args.subscribe),
+                               "since": None, "max_gap_s": 120.0, "region": args.region,
+                               "license": "ODbL 1.0 — attribute adsb.lol; share derived databases alike"})
+    elif args.subscribe:
+        lib.update_meta(args.name, subscribe=True)
+    print(yaml.safe_dump(lib.refresh(args.name), sort_keys=False))
+    return 0
+
+
 def cmd_serve(args, cfg) -> int:
     from .web import create_app
 
@@ -320,7 +340,7 @@ def main(argv=None) -> int:
             s.add_argument("--adsb", required=True)
             s.add_argument("--out", required=True)
 
-    s = sub.add_parser("fetch-adsblol", help="rehydrate one day from the adsb.lol open archive (ODbL), bbox-filtered")
+    s = sub.add_parser("fetch-adsblol", help="fetch day(s) from the adsb.lol open archive (ODbL); world or a bbox")
     s.add_argument("--date", required=True, help="YYYY-MM-DD (UTC day)")
     s.add_argument("--end-date", help="last UTC day of a range (inclusive)")
     s.add_argument("--bbox", default="world", help="S,W,N,E degrees (Florida: 24.2,-87.8,31.2,-79.8), or 'world' (default)")
@@ -341,6 +361,15 @@ def main(argv=None) -> int:
     s.add_argument("--interval", type=float, default=1.0)
     s.add_argument("--flush", type=float, default=30.0)
 
+    s = sub.add_parser("library-register", help="register/refresh a CLI-filled dataset folder for the web UI")
+    s.add_argument("--name", required=True, help="folder name under the library, e.g. us")
+    s.add_argument("--library", default="data/adsb/library")
+    s.add_argument("--bbox", help="S,W,N,E it was fetched with, or 'world'")
+    s.add_argument("--region", help="label, e.g. 'Continental US'")
+    s.add_argument("--source", default="adsb.lol archive (ODbL 1.0)")
+    s.add_argument("--skip-jets", action="store_true", help="it was fetched with --skip-jets")
+    s.add_argument("--subscribe", action="store_true", help="let the web app fetch each new day automatically")
+
     s = sub.add_parser("serve", help="local web interface")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
@@ -357,7 +386,7 @@ def main(argv=None) -> int:
     return {"synth-demo": cmd_synth_demo, "ingest-adsb": cmd_ingest, "measure": cmd_measure, "locate": cmd_locate,
             "locate-area": cmd_locate_area, "serve": cmd_serve,
             "fetch-adsblol": cmd_fetch_adsblol, "collect": cmd_collect,
-            "extract-audio": cmd_extract_audio}[args.cmd](args, cfg)
+            "extract-audio": cmd_extract_audio, "library-register": cmd_library_register}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

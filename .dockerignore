@@ -1,0 +1,9 @@
+.venv
+.git
+data/adsb
+data/audio
+data/out
+data/dem
+**/__pycache__
+.pytest_cache
+*.bundle

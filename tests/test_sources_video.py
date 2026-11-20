@@ -180,3 +180,16 @@ def test_concurrent_meta_updates_and_partial_tiles(tmp_path):
     (dd / "tile_+20_-090.parquet.partial").write_bytes(b"PAR1 half-written")
     assert len(adsb.read_table(tmp_path / "fl")) == 0 if any((tmp_path / "fl").rglob("*.parquet")) else True
     lib.refresh("fl")
+
+
+def test_library_register_cli(tmp_path):
+    from dopplergeo import cli
+
+    dd = tmp_path / "us" / "day=2023-11-14"
+    dd.mkdir(parents=True)
+    sources.rows_to_frame([{"time": 1.7e9 + k, "icao24": "abc", "lat": 30.0, "lon": -80.0, "alt_msl_m": 100.0,
+                            "vx_east": 1.0, "vy_north": 0.0, "vz_up": 0.0, "type_code": None}
+                           for k in range(5)]).to_parquet(dd / "tile_+30_-080.parquet")
+    assert cli.main(["library-register", "--name", "us", "--library", str(tmp_path), "--bbox", "24.4,-125,49.5,-66.5"]) == 0
+    m = sources.Library(tmp_path).meta("us")
+    assert m["rows"] == 5 and m["days"] == ["2023-11-14"] and m["request_bbox"] == [24.4, -125.0, 49.5, -66.5]
