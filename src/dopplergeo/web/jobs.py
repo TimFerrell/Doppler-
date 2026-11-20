@@ -118,6 +118,7 @@ class JobManager:
             with open(log_path, "a", buffering=1) as fh, contextlib.redirect_stdout(fh):
                 for step in j["steps"]:
                     argv = step["argv"]
+                    reason = None
                     print(f"$ dopplergeo {' '.join(argv)}", flush=True)
                     try:
                         rc = cli.main(argv)
@@ -125,12 +126,17 @@ class JobManager:
                         if e.code not in (0, None):
                             print(str(e.code), flush=True)
                         rc = 0 if e.code in (0, None) else 1
+                        if isinstance(e.code, str):
+                            reason = e.code
+                    except Exception as e:  # noqa: BLE001 - keep the real reason for the job page
+                        reason = f"{e}"
+                        raise
                     warn = (step.get("warn") or {}).get(str(rc))
                     if rc != 0 and warn:
                         warnings.append(warn)
                         print(f"warning: {warn}", flush=True)
                     elif rc != 0:
-                        error = f"step failed (exit {rc}): dopplergeo {' '.join(argv)}"
+                        error = reason or f"step failed (exit {rc}): dopplergeo {' '.join(argv)}"
                         break
         except Exception as e:  # noqa: BLE001
             error = f"{type(e).__name__}: {e}"

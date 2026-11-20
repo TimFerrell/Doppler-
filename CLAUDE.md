@@ -6,6 +6,10 @@ made. Python 3.12+, Flask UI, numpy/scipy DSP, pandas/pyarrow parquet data layer
 duckdb or polars in the data path. Read `README.md` (usage, physics) and `docs/adsb_sources.md`
 (data sources) first.
 
+**Recording start times come only from: the user's input, the browser recorder's clock, or the media
+container's metadata (`creation_time` / Apple `creationdate`). Never infer dates or times from file
+names, in code or when diagnosing problems.**
+
 **Only recordings owned by, or authorized to, the operator may be analysed.** `measure`/`locate`
 refuse to run without the attestation (flag/config/UI checkbox). Keep that gate.
 
@@ -38,7 +42,7 @@ world", live collect, import), **Measure**, **Synthetic demo**. Job pages show s
 "What this means" explanation. No login: LAN only.
 
 ## Tests
-`python -m pytest -q tests`: offline, about 1–2 min, 52 tests at the time of writing. Phase-0 check:
+`python -m pytest -q tests`: offline, about 1–2 min, 56 tests at the time of writing. Phase-0 check:
 `dopplergeo synth-demo --out /tmp/s --seeds 1` should print "seed 1: #1 error 55.8 m".
 
 ## Library data rules

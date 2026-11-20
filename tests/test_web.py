@@ -117,3 +117,28 @@ def test_rehydrate_form_validation(client):
     assert r.status_code == 400 and "south &lt; north" in r.get_data(as_text=True)
     r = c.post("/data/rehydrate", data={**base, "date": "2026-01-05", "end_date": "2026-01-01"})
     assert r.status_code == 400
+
+
+def test_locate_refuses_recording_outside_flight_data(client, tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    from dopplergeo import sources
+
+    c, _ = client
+    lib = sources.Library(tmp_path / "lib")
+    lib.create("us", {"source": "test", "kind": "archive", "max_gap_s": 120.0})
+    dd = lib.path("us") / "day=2026-10-21"
+    dd.mkdir()
+    sources.rows_to_frame([{"time": 1792540800.0 + k, "icao24": "abc", "lat": 34.0, "lon": -84.4, "alt_msl_m": 900.0,
+                            "vx_east": 50.0, "vy_north": 0.0, "vz_up": 0.0, "type_code": "C172"}
+                           for k in range(10)]).to_parquet(dd / "tile_+30_-090.parquet")
+    lib.refresh("us")
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros(16000, np.float32), 16000, format="WAV")
+    rec = c.post("/recordings", data={"audio": (io.BytesIO(buf.getvalue()), "r.wav"), "start_utc": "1474200000",
+                                      "label": "old"}, content_type="multipart/form-data").get_json()["name"]
+    r = c.post("/jobs/locate", data={"attest": "yes", "recording": rec, "dataset": "us", "center_lat": "33.96",
+                                     "center_lon": "-84.46", "radius_km": "200"})
+    html = r.get_data(as_text=True)
+    assert r.status_code == 400 and "2016-09-18" in html and "2026-10-21" in html

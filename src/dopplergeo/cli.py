@@ -161,7 +161,13 @@ def cmd_locate(args, cfg) -> int:
     df = adsb.read_table(args.adsb, float(cfg["adsb"]["flight_gap_s"]), bbox=bbox, t_range=t_range)
     log.info("ADS-B rows in the search window: %d (%d aircraft)", len(df), df["icao24"].nunique())
     if df.empty:
-        raise SystemExit("no ADS-B data in the search region/time window: check the dataset covers the recording")
+        from .report import utc as _utc
+
+        when = (f"the recording starts {_utc(start)}" if start is not None else "no recording start time is known")
+        raise SystemExit(f"No flight data in the search area for the recording's time: {when}, and the flight data "
+                         f"({args.adsb}) has nothing within {pad_m / 1000:.0f} km of the search centre in that window. "
+                         "Use flight data covering the recording's date and place (Flight data tab), or correct the start "
+                         "time if the file's metadata is wrong.")
     truth = None
     if args.truth_latlon:
         la, lo = (float(v) for v in args.truth_latlon.split(","))

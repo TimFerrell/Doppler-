@@ -387,6 +387,26 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
                 adsb_path = lib.path(dsname)
                 max_gap = meta.get("max_gap_s")
                 adsb_desc = f"library dataset {dsname}"
+                # refuse up front when the recording's time is not covered (instead of a job that cannot succeed)
+                st = start
+                if isinstance(st, str):
+                    from ..cli import parse_time as _pt
+
+                    try:
+                        st = _pt(st)
+                    except ValueError:
+                        st = None
+                if st is not None and meta.get("t_min") and meta.get("t_max"):
+                    from ..report import utc as _utc
+
+                    dur = float(rmeta.get("duration_s") or 0)
+                    if st + dur < meta["t_min"] - 3600 or st > meta["t_max"] + 3600:
+                        src = rmeta.get("time_source") or "the start time given"
+                        raise FormError(
+                            f"The recording starts {_utc(st)} (from {src}), but the flight data '{dsname}' covers "
+                            f"{_utc(meta['t_min'])} to {_utc(meta['t_max'])}. Get flight data for the recording's date "
+                            "(Flight data tab), or, if the file's date is wrong, enter the correct start time under "
+                            "'When it started (UTC)'.")
             else:
                 files = [f for f in request.files.getlist("adsb") if f and f.filename]
                 if not files:
