@@ -136,6 +136,7 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     jobs = JobManager(jobs_dir)
     lib = sources.Library(Path(library_dir).resolve())
     collectors = sources.CollectorManager(lib, cfg_full)
+    started_at = time.time()
     rec_dir = Path(recordings_dir).resolve()
     rec_dir.mkdir(parents=True, exist_ok=True)
     app.extensions["dopplergeo"] = {"jobs": jobs, "library": lib, "collectors": collectors, "recordings": rec_dir}
@@ -818,6 +819,55 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
         v = float(v or 0)
         return f"{int(v // 60)}:{int(v % 60):02d}"
 
+    # ------------------------------------------------------------------ status (used by the supervisor)
+    @app.get("/api/status")
+    def api_status():
+        js = jobs.list()
+        busy = [j["id"] for j in js if j["state"] in ("queued", "running")]
+        return jsonify({"version": code_version(), "started": started_at, "busy_jobs": len(busy), "busy_ids": busy,
+                        "collectors": [c["dataset"] for c in collectors.statuses() if c.get("running")],
+                        "updater": updater_state()})
+
+    @app.get("/data/progress.json")
+    def data_progress():
+        return jsonify({"downloads": sources.fetch_progress(lib.root)})
+
+    @app.context_processor
+    def inject_version():
+        return {"code_version": code_version(), "updater": updater_state()}
+
     if scheduler:
         sched.start()  # last: the enqueue callback needs every helper above
+        resumed = collectors.resume()
+        if resumed:
+            app.logger.info("resumed collectors: %s", resumed)
     return app
+
+
+def code_version() -> dict:
+    """Git commit of the running code (if it runs from a checkout)."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[3]
+    try:
+        out = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(root), "log", "-1", "--format=%h|%ct|%s"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        h, ct, subj = out.split("|", 2)
+        return {"commit": h, "time": float(ct), "subject": subj}
+    except Exception:  # noqa: BLE001 - not a checkout, or git missing
+        from .. import __version__
+
+        return {"commit": None, "time": None, "subject": f"dopplergeo {__version__}"}
+
+
+def updater_state() -> dict | None:
+    """State written by `dopplergeo supervise` (None when not supervised)."""
+    import os
+
+    p = os.environ.get("DOPPLERGEO_UPDATER_STATE")
+    if not p or not Path(p).exists():
+        return None
+    try:
+        return json.loads(Path(p).read_text())
+    except (OSError, ValueError):
+        return None

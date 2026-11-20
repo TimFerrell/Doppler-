@@ -15,7 +15,11 @@
 <main>
 {% block body %}{% endblock %}
 </main>
-<footer class="foot">Analyse only recordings you own or are explicitly authorized to analyse. Pages load no third-party
+<footer class="foot">
+<p class="ver" id="ver">Version {{ code_version.commit or '?' }}{% if code_version.subject %} · “{{ code_version.subject[:70] }}”{% endif %}
+{%- if updater %} · auto-update: <b>{{ updater.status }}</b>{% if updater.message %} ({{ updater.message }}){% endif %}
+{%- if updater.rebuild_recommended %} · <b>image rebuild recommended</b>{% endif %}
+{%- else %} · auto-update off (not running under <code>dopplergeo supervise</code>){% endif %}</p>Analyse only recordings you own or are explicitly authorized to analyse. Pages load no third-party
 resources; the server goes online only when you rehydrate or collect ADS-B data, and the street-map layer is off unless you turn it on.
 Map data: US Census Bureau (via us-atlas), Natural Earth. Archive ADS-B data: adsb.lol, ODbL 1.0.</footer>
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>

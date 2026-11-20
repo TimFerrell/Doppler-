@@ -107,6 +107,42 @@
     src.addEventListener('change', sync); sync();
   }
 
+  // live archive-download progress (web jobs and command-line fetches alike)
+  const dl = document.getElementById('downloads');
+  if (dl) {
+    const esc = t => String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+    const fmtAge = s => s < 90 ? `${Math.round(s)} s ago` : `${Math.round(s / 60)} min ago`;
+    const poll = async () => {
+      try {
+        const r = await fetch('/data/progress.json', {cache: 'no-store'});
+        const d = (await r.json()).downloads || [];
+        const now = Date.now() / 1000;
+        const active = d.filter(x => x.state === 'downloading');
+        dl.hidden = !d.length;
+        document.getElementById('dl-list').innerHTML = d.map(x => {
+          const pct = x.total_bytes ? Math.min(100, 100 * x.done_bytes / x.total_bytes) : 0;
+          const label = {downloading: `${(x.done_bytes / 1e9).toFixed(2)} / ${(x.total_bytes / 1e9).toFixed(2)} GB`,
+                         done: 'done', failed: 'failed: ' + esc(x.error || ''), stalled: 'no progress for over 2 min (worker stopped?)'}[x.state] || x.state;
+          return `<div class="dl ${x.state}"><div class="dlhead"><b>${esc(x.dataset)}</b> · ${esc(x.day)} <span class="muted">${label}` +
+                 ` · ${(x.rows || 0).toLocaleString()} positions · updated ${fmtAge(now - x.updated)}</span></div>` +
+                 `<div class="progressbar"><span style="width:${x.state === 'done' ? 100 : pct.toFixed(1)}%"></span></div></div>`;
+        }).join('');
+        const b = document.getElementById('dl-banner');
+        if (b) {
+          b.hidden = !active.length;
+          if (active.length) {
+            const done = active.reduce((a, x) => a + x.done_bytes, 0), tot = active.reduce((a, x) => a + x.total_bytes, 0);
+            const fin = d.filter(x => x.state === 'done').length;
+            b.textContent = `Downloading flight data: ${active.length} day(s) in progress (${(done / 1e9).toFixed(1)} of ${(tot / 1e9).toFixed(1)} GB), ` +
+                            `${fin} finished recently. Details in the Flight data tab.`;
+          }
+        }
+        setTimeout(poll, active.length ? 4000 : 20000);
+      } catch (e) { setTimeout(poll, 20000); }
+    };
+    poll();
+  }
+
   // Job page: poll status + log until the job finishes, then reload to show results
   const jobEl = document.getElementById('job');
   if (jobEl) {

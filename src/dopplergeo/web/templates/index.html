@@ -30,6 +30,7 @@
 </ol>
 
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+<div class="note dlbanner" id="dl-banner" hidden></div>
 
 <div class="tabs" role="tablist">
   {% for key, label in [('locate','3 · Locate'),('record','2 · Record'),('data','1 · Flight data'),('measure','Measure'),('synth','Synthetic demo')] %}
@@ -187,6 +188,12 @@
       website. Start it before you go out to record.</li>
     <li><b>Import receiver logs</b>: files saved by your own tar1090 / readsb receiver.</li>
   </ul>
+  <div id="downloads" class="downloads" hidden>
+    <h2>Downloads in progress</h2>
+    <p class="hint">Live progress of archive downloads, whether started here or from the command line. Each day is one
+      ~3.6 GB download; the bar shows how much of it has streamed through.</p>
+    <div id="dl-list"></div>
+  </div>
   <h2>Your flight data</h2>
   {% if datasets %}
   <table class="datasets">

@@ -26,7 +26,8 @@ refuse to run without the attestation (flag/config/UI checkbox). Keep that gate.
 `locate-area` (Phase B: deliberately not built, exits) ·
 `fetch-adsblol --date D [--end-date D2] [--bbox S,W,N,E|world] [--skip-jets] --out DIR` ·
 `extract-audio --video --out` · `collect --source receiver|adsb.lol|airplanes.live ...` ·
-`library-register --name NAME [--bbox ...] [--region ...] [--skip-jets] [--subscribe]` · `serve`.
+`library-register --name NAME [--bbox ...] [--region ...] [--skip-jets] [--subscribe]` · `serve` ·
+`supervise [--interval 30] [--token-file F] -- serve ...` (auto-update wrapper, the container default).
 Real adsb.lol tags look like `v2026.11.19-planes-readsb-prod-0`. Releases appear about a day after
 the covered UTC day. Each day is one ~3.6 GB world download (2 parts), whatever bbox you keep.
 
@@ -37,7 +38,7 @@ world", live collect, import), **Measure**, **Synthetic demo**. Job pages show s
 "What this means" explanation. No login: LAN only.
 
 ## Tests
-`python -m pytest -q tests`: offline, about 1–2 min, 47 tests at the time of writing. Phase-0 check:
+`python -m pytest -q tests`: offline, about 1–2 min, 52 tests at the time of writing. Phase-0 check:
 `dopplergeo synth-demo --out /tmp/s --seeds 1` should print "seed 1: #1 error 55.8 m".
 
 ## Library data rules
@@ -49,19 +50,34 @@ world", live collect, import), **Measure**, **Synthetic demo**. Job pages show s
 - Archive tracks are thinned (~20 s per point in straight flight), so archive datasets use
   `max_gap_s: 120`.
 
-## Deployment: Unraid host "Tower" (192.168.0.18), as reported 2026-11-20
-- Repo `/mnt/cache/dopplergeo/src`, branch `claude/acoustic-aircraft-doppler-geo-eukxq4`.
-- Image `dopplergeo:local`, built locally: `docker build -f Dockerfile.local -t dopplergeo:local
-  /mnt/cache/dopplergeo/src`, then recreate the container (the dockerMan "Update" button cannot
-  rebuild it). Container `dopplergeo` runs as 99:100, `--memory 20g`, restart unless-stopped,
-  healthcheck on :8765. Template: `/boot/config/plugins/dockerMan/templates-user/my-dopplergeo.xml`.
-- Volumes: `/app/data/adsb` → `/mnt/user/adsb` (share `adsb`, cache-prefer);
-  `/app/data/audio`, `/app/data/out`, `/app/data/dem` → `/mnt/cache/dopplergeo/data/...`.
-  Keep CWD=/app: relative default paths resolve into the mounts.
-- Everything Python runs inside the container: `docker exec dopplergeo dopplergeo <cmd>`,
+## Deployment: Unraid host "Tower" (192.168.0.18)
+
+### Auto-update (`dopplergeo supervise`, the container's default command since commit ≥ the one adding supervise.py)
+- The git checkout `/mnt/cache/dopplergeo/src` is **bind-mounted at `/app`**, owned by 99:100 (`chown -R 99:100`),
+  so code updates are a `git pull`, not an image rebuild. Data volumes stay mounted under `/app/data/...`.
+- `supervise` runs the web app as a child process and checks `git ls-remote` every 30 s. On a new commit it waits
+  until no web job is queued or running, fast-forwards (never merges, never touches local edits), installs
+  dependencies if requirements/pyproject changed, runs a quick offline self-test, then restarts **only the web
+  app**. A failed self-test rolls back and skips that commit. The container keeps running, so `docker exec`
+  backfills survive updates. Live collectors resume after the restart.
+- Status: UI footer, `GET /api/status`, `data/out/updater.json`. If `Dockerfile.local` changed, the UI says
+  "image rebuild recommended": rebuild and recreate at a quiet moment (that one *does* kill exec'd workers).
+- A private repo needs `--token-file /run/secrets/gh_token` (mount a read-only file holding a fine-grained
+  read-only token).
+- Never edit code in the Tower checkout: local edits block auto-update. Commit on GitHub instead.
+
+### Container
+- Image `dopplergeo:local`: `docker build -f Dockerfile.local -t dopplergeo:local /mnt/cache/dopplergeo/src`
+  (only needed for Dockerfile changes). Python deps are in `/opt/venv`, owned by 99:100.
+- Container `dopplergeo` runs as 99:100, `--memory 20g`, restart unless-stopped, healthcheck on :8765.
+  Template: `/boot/config/plugins/dockerMan/templates-user/my-dopplergeo.xml`.
+- Volumes: `/app` → `/mnt/cache/dopplergeo/src` (the checkout); `/app/data/adsb` → `/mnt/user/adsb`
+  (share `adsb`, cache-prefer); `/app/data/audio`, `/app/data/out`, `/app/data/dem` →
+  `/mnt/cache/dopplergeo/data/...`. Keep CWD=/app.
+- Everything Python runs in the container: `docker exec dopplergeo dopplergeo <cmd>`,
   `docker exec dopplergeo python -m pytest -q tests`.
-- **Recreating or restarting the container kills running backfill workers** (they are `docker exec`
-  children). Check `/mnt/cache/dopplergeo/data/out/fetch-*-parallel/status.txt` first.
+- Archive downloads (UI jobs or `docker exec ... fetch-adsblol`) write `_progress/<day>.json` in the dataset;
+  the Flight data tab shows them live.
 - Backfill driver scripts live in `/mnt/cache/dopplergeo/scripts/` (host, not in git). 8 concurrent
   day-disjoint workers are CPU-bound on the 5600G (6C/12T, ~35–47 MB/s aggregate).
 - Unraid: `/root` and `/tmp` are RAM (volatile). Durable: `/mnt/cache`, `/mnt/user`, `/boot`. The
@@ -71,11 +87,11 @@ world", live collect, import), **Measure**, **Synthetic demo**. Job pages show s
   before publishing ports. Never expose or proxy the UI beyond the LAN.
 
 ## Datasets on Tower (2026-11-20)
-- `library/us`: CONUS bbox `24.4,-125.0,49.5,-66.5`, jets kept, 30-day backfill
+- `library/us` (the only dataset to use): CONUS bbox `24.4,-125.0,49.5,-66.5`, jets kept, 30-day backfill
   2026-10-21..2026-11-19 in progress. Measured here: ~1.7 GB/day, ~51 M rows, ~43 k aircraft per day.
   After it finishes: `docker exec dopplergeo dopplergeo library-register --name us
   --bbox 24.4,-125.0,49.5,-66.5 --region "Continental US"`.
-- `library/florida`: superseded partial run (~360 MB). Delete only with the owner's OK.
+- `library/florida`: superseded. The owner approved deleting it (2026-11-20).
 
 ## Open items
 - Phase B / date-unknown search (search a date range): designed in chat, not built.

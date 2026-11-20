@@ -193,3 +193,26 @@ def test_library_register_cli(tmp_path):
     assert cli.main(["library-register", "--name", "us", "--library", str(tmp_path), "--bbox", "24.4,-125,49.5,-66.5"]) == 0
     m = sources.Library(tmp_path).meta("us")
     assert m["rows"] == 5 and m["days"] == ["2023-11-14"] and m["request_bbox"] == [24.4, -125.0, 49.5, -66.5]
+
+
+def test_fetch_writes_progress_file(tmp_path, monkeypatch):
+    urls = _split_tar(tmp_path, [_trace("a00001", 1.7e9, [(27.0, -81.0, 2000)] * 10)])
+    monkeypatch.setattr(sources, "adsblol_part_urls", lambda day, variant="prod-0", max_parts=12: urls)
+    sources.fetch_adsblol_day(dt.date(2023, 11, 14), None, tmp_path / "ds")
+    rec = sources.fetch_progress(tmp_path)
+    assert len(rec) == 1 and rec[0]["state"] == "done" and rec[0]["day"] == "2023-11-14" and rec[0]["rows"] == 10
+    assert rec[0]["done_bytes"] == rec[0]["total_bytes"] > 0
+
+
+def test_collectors_resume_after_restart(tmp_path):
+    from dopplergeo import config
+
+    cfg = config.load_config()
+    lib = sources.Library(tmp_path)
+    m1 = sources.CollectorManager(lib, cfg)
+    m1.start("home", "receiver", url="http://127.0.0.1:9/aircraft.json", interval_s=1.0, flush_s=60)
+    m1.stop_all()  # app shutting down: stays saved
+    m2 = sources.CollectorManager(lib, cfg)
+    assert m2.resume() == ["home"]
+    m2.stop("home")  # stopped by the user: forgotten
+    assert sources.CollectorManager(lib, cfg).resume() == []

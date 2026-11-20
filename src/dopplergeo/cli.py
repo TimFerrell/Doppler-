@@ -251,7 +251,7 @@ def cmd_collect(args, cfg) -> int:
     from . import sources
 
     lib = sources.Library(args.library)
-    mgr = sources.CollectorManager(lib, cfg)
+    mgr = sources.CollectorManager(lib, cfg, persist=False)  # CLI collectors are not resumed by the web app
     kw = {"interval_s": args.interval, "flush_s": args.flush}
     if args.source == "receiver":
         kw["url"] = args.url
@@ -291,6 +291,12 @@ def cmd_library_register(args, cfg) -> int:
         lib.update_meta(args.name, subscribe=True)
     print(yaml.safe_dump(lib.refresh(args.name), sort_keys=False))
     return 0
+
+
+def cmd_supervise(args, cfg) -> int:
+    from . import supervise
+
+    return supervise.main(args)
 
 
 def cmd_serve(args, cfg) -> int:
@@ -370,6 +376,17 @@ def main(argv=None) -> int:
     s.add_argument("--skip-jets", action="store_true", help="it was fetched with --skip-jets")
     s.add_argument("--subscribe", action="store_true", help="let the web app fetch each new day automatically")
 
+    s = sub.add_parser("supervise", help="run the web app and keep it in sync with its git branch (auto-update)")
+    s.add_argument("--repo", help="git checkout to keep updated (default: current directory)")
+    s.add_argument("--branch", help="branch to follow (default: the checkout's current branch)")
+    s.add_argument("--interval", type=float, default=30.0, help="seconds between checks (default 30)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--state", help="state file (default: data/out/updater.json)")
+    s.add_argument("--token-file", help="file holding a GitHub token, for private repositories")
+    s.add_argument("--no-selftest", action="store_true", help="skip the quick self-test before restarting")
+    s.add_argument("--no-auto-update", action="store_true", help="only report available updates")
+    s.add_argument("serve_args", nargs=argparse.REMAINDER, help="after --: the serve command line")
+
     s = sub.add_parser("serve", help="local web interface")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
@@ -386,7 +403,8 @@ def main(argv=None) -> int:
     return {"synth-demo": cmd_synth_demo, "ingest-adsb": cmd_ingest, "measure": cmd_measure, "locate": cmd_locate,
             "locate-area": cmd_locate_area, "serve": cmd_serve,
             "fetch-adsblol": cmd_fetch_adsblol, "collect": cmd_collect,
-            "extract-audio": cmd_extract_audio, "library-register": cmd_library_register}[args.cmd](args, cfg)
+            "extract-audio": cmd_extract_audio, "library-register": cmd_library_register,
+            "supervise": cmd_supervise}[args.cmd](args, cfg)
 
 
 if __name__ == "__main__":

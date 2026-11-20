@@ -1,11 +1,18 @@
-# Image recipe used on the Unraid host (docs: CLAUDE.md). Build from the repo root:
+# Image recipe for the Unraid host (see CLAUDE.md, "Deployment"). Build from the repo root:
 #   docker build -f Dockerfile.local -t dopplergeo:local .
+# Run with the git checkout bind-mounted at /app (owned by 99:100) so `dopplergeo supervise` can keep it
+# up to date: it checks GitHub every 30 s, fast-forwards, self-tests and restarts only the web app.
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# dependencies live in a venv owned by the runtime user (99:100), so auto-updates can install new ones
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 WORKDIR /app
 COPY . /app
-RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --no-deps -e . && chown -R 99:100 /opt/venv
 ENV PYTHONUNBUFFERED=1 MPLCONFIGDIR=/tmp/mpl HOME=/tmp
 EXPOSE 8765
-CMD ["dopplergeo", "serve", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["dopplergeo", "supervise", "--interval", "30", "--", "serve", "--host", "0.0.0.0", "--port", "8765"]

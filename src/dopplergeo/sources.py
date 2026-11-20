@@ -297,6 +297,67 @@ def _trace_may_touch(obj: dict, bbox, pad: float = 1.0, stride: int = 10) -> boo
     return False
 
 
+class ProgressFile:
+    """``<dataset>/_progress/<day>.json``: live status of one day's fetch, readable by the web UI.
+
+    Written by every fetch (web job or command line), at most every 3 s.
+    """
+
+    def __init__(self, out_dir: Path, day: str, total: int):
+        import os
+        import socket
+
+        self.path = Path(out_dir) / "_progress" / f"{day}.json"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.base = {"dataset": Path(out_dir).name, "day": day, "total_bytes": int(total), "pid": os.getpid(),
+                     "host": socket.gethostname(), "started": time.time()}
+        self.last = 0.0
+        self._write("downloading", 0, {})
+
+    def _write(self, state, done, stats, **extra):
+        rec = {**self.base, "state": state, "done_bytes": int(done), "updated": time.time(),
+               "rows": int(stats.get("rows_out", 0)), "aircraft": int(stats.get("aircraft_kept", 0)), **extra}
+        tmp = self.path.with_suffix(f".{rec['pid']}.tmp")
+        try:
+            tmp.write_text(json.dumps(rec))
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+    def update(self, done, stats):
+        if time.time() - self.last >= 3:
+            self.last = time.time()
+            self._write("downloading", done, stats)
+
+    def finish(self, state, stats, **extra):
+        self._write(state, self.base["total_bytes"] if state == "done" else 0, stats, **extra)
+
+
+def fetch_progress(library_root: str | Path, keep_finished_s: float = 6 * 3600) -> list[dict]:
+    """All fetch progress records under a library; stale/finished ones older than ``keep_finished_s`` are pruned.
+
+    A 'downloading' record not updated for 2 minutes is reported as 'stalled' (the worker probably died).
+    """
+    out = []
+    now = time.time()
+    for p in Path(library_root).glob("*/_progress/*.json"):
+        try:
+            r = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        age = now - float(r.get("updated", 0))
+        if r.get("state") in ("done", "failed") and age > keep_finished_s:
+            p.unlink(missing_ok=True)
+            continue
+        if r.get("state") == "downloading" and age > 120:
+            if age > keep_finished_s:
+                p.unlink(missing_ok=True)
+                continue
+            r["state"] = "stalled"
+        out.append(r)
+    return sorted(out, key=lambda r: (r.get("state") != "downloading", r.get("dataset", ""), r.get("day", "")))
+
+
 TILE_DEG = 10
 
 
@@ -399,6 +460,14 @@ def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float] | No
              "traces_skipped_type": 0, "aircraft_kept": 0, "points": 0, "on_ground": 0, "dropped_missing_fields": 0,
              "rows_out": 0, "tiles_out": 0}
     log.info("adsb.lol %s %s: %d part(s), %.2f GB", day, used, len(parts), stats["bytes"] / 1e9)
+    reporter = ProgressFile(out_dir, day.isoformat(), stats["bytes"])
+    user_progress = progress
+
+    def progress(done, total):  # noqa: F811 - wraps the caller's callback with the progress file
+        reporter.update(done, stats)
+        if user_progress:
+            user_progress(done, total)
+
     stream = _ConcatHTTP([u for u, _ in parts], progress)
     stream.total = stats["bytes"]
     rows: list[dict] = []
@@ -413,6 +482,7 @@ def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float] | No
             stats["rows_out"] += len(df)
             rows.clear()
 
+    ok = False
     try:
         with tarfile.open(fileobj=io.BufferedReader(stream, 1 << 20), mode="r|") as tar:
             for m in tar:
@@ -439,10 +509,16 @@ def fetch_adsblol_day(day: dt.date, bbox: tuple[float, float, float, float] | No
                     if len(rows) >= chunk_rows:
                         flush()
         flush()
+        ok = True
+    except BaseException as e:
+        reporter.finish("failed", stats, error=f"{type(e).__name__}: {e}")
+        raise
     finally:
         stats["tiles_out"] = writer.close()
     stats["aircraft_kept"] = len(aircraft)
     (day_dir / "_day.json").write_text(json.dumps(stats, indent=1))
+    if ok:
+        reporter.finish("done", stats)
     log.info("adsb.lol %s: %s", day, stats)
     return stats
 
@@ -608,11 +684,41 @@ class Collector(threading.Thread):
 
 
 class CollectorManager:
-    def __init__(self, library: Library, cfg: dict):
+    """Runs live collectors; their settings are saved so they resume after a restart of the app."""
+
+    def __init__(self, library: Library, cfg: dict, persist: bool = True):
         self.library, self.cfg = library, cfg
         self.active: dict[str, Collector] = {}
+        self.state_path = library.root / "_collectors.json" if persist else None
 
-    def start(self, dataset: str, source: str, **kw) -> Collector:
+    def _saved(self) -> dict:
+        if self.state_path and self.state_path.exists():
+            try:
+                return json.loads(self.state_path.read_text())
+            except (OSError, ValueError):
+                return {}
+        return {}
+
+    def _save(self, saved: dict) -> None:
+        if self.state_path:
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(saved, indent=1))
+            tmp.replace(self.state_path)
+
+    def resume(self) -> list[str]:
+        """Restart the collectors that were running when the app last stopped."""
+        started = []
+        for name, spec in self._saved().items():
+            if name in self.active and self.active[name].is_alive():
+                continue
+            try:
+                self.start(name, spec["source"], _persist=False, **spec["kw"])
+                started.append(name)
+            except Exception as e:  # noqa: BLE001
+                log.warning("could not resume collector %s: %s", name, e)
+        return started
+
+    def start(self, dataset: str, source: str, _persist: bool = True, **kw) -> Collector:
         if dataset in self.active and self.active[dataset].is_alive():
             raise ValueError(f"already collecting into {dataset}")
         if not self.library.exists(dataset):
@@ -621,17 +727,26 @@ class CollectorManager:
         c = Collector(self.library, dataset, source, self.cfg, **kw)
         self.active[dataset] = c
         c.start()
+        if _persist:
+            saved = self._saved()
+            saved[dataset] = {"source": source, "kw": kw}
+            self._save(saved)
         return c
 
-    def stop(self, dataset: str) -> None:
+    def stop(self, dataset: str, forget: bool = True) -> None:
         c = self.active.get(dataset)
         if c:
             c.stop()
             c.join(timeout=15)
+        if forget:
+            saved = self._saved()
+            if saved.pop(dataset, None) is not None:
+                self._save(saved)
 
     def statuses(self) -> list[dict]:
         return [c.status | {"running": c.is_alive()} for c in self.active.values()]
 
-    def stop_all(self) -> None:
+    def stop_all(self, forget: bool = False) -> None:
+        """Stop every collector; by default they stay saved and resume on the next start."""
         for name in list(self.active):
-            self.stop(name)
+            self.stop(name, forget=forget)
