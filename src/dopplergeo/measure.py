@@ -201,7 +201,8 @@ def fit_curve(spec: Spectrogram, cfg: dict, c: float, t_lo: float | None = None,
     return fit_ridge(ridge.times[good], ridge.freq[good], cfg, c, band, t_lo, t_hi, rel=high), ridge
 
 
-def detect_events(spec: Spectrogram, cfg: dict, c: float, band=None, min_spread=None) -> tuple[list[Measurement], dict]:
+def detect_events(spec: Spectrogram, cfg: dict, c: float, band=None, min_spread=None,
+                  on_window=None) -> tuple[list[Measurement], dict]:
     """Ridge-energy flyover detector with S-curve morphology test.
 
     Slides a window over the recording; a window is a candidate if enough columns have a
@@ -220,7 +221,7 @@ def detect_events(spec: Spectrogram, cfg: dict, c: float, band=None, min_spread=
     starts = np.arange(t0, max(t0, t1 - W) + 1e-9, step) if not short else np.array([t0])
     # a clip shorter than one window is fitted whole; its closest approach may sit nearer the edges
     margin = 0.1 if short else 0.2
-    for s in starts:
+    for wi, s in enumerate(starts):
         diag["windows"] += 1
         e = min(s + W, t1)
         ridge = extract_ridge(spec, band, s, e, track=band[0] >= 250)
@@ -231,6 +232,8 @@ def detect_events(spec: Spectrogram, cfg: dict, c: float, band=None, min_spread=
             rec["reasons"].append(f"a clear engine tone is present in only {cover:.0%} of the window "
                                   f"(needs {float(d['min_coverage']):.0%})")
             diag["rejected"].append(rec)
+            if on_window:
+                on_window(wi, len(starts), rec, None, False)
             continue
         diag["energetic"] += 1
         meas, _ = fit_curve(spec, cfg, c, s, e, band)
@@ -250,6 +253,8 @@ def detect_events(spec: Spectrogram, cfg: dict, c: float, band=None, min_spread=
             rec["reasons"].append(f"the closest approach (fitted at {meas.t_cpa_heard:.1f} s) is not inside the "
                                   f"recording's middle part ({lo:.1f}–{hi:.1f} s): the clip misses the moment the plane "
                                   "was nearest")
+        if on_window:
+            on_window(wi, len(starts), rec, meas, not rec["reasons"])
         if rec["reasons"]:
             diag["rejected"].append(rec)
             continue
@@ -282,17 +287,20 @@ def fit_event(spec: Spectrogram, cfg: dict, c: float, t_center: float, manual: b
     return meas
 
 
-def detect_all(low: Spectrogram, high: Spectrogram | None, cfg: dict, c: float) -> tuple[list[Measurement], dict]:
+def detect_all(low: Spectrogram, high: Spectrogram | None, cfg: dict, c: float,
+               on_window=None) -> tuple[list[Measurement], dict]:
     """Flyovers in the prop band (low spectrogram) and, if enabled, the jet-tone band (high spectrogram).
 
     Events are returned in time order; a jet-band event at (nearly) the same moment as a prop-band one
     is kept too (it may be a different aircraft, or a harmonic: the search decides).
     """
-    events, diag = detect_events(low, cfg, c)
+    cb = (lambda band: (lambda *a: on_window(band, *a))) if on_window else (lambda band: None)
+    events, diag = detect_events(low, cfg, c, on_window=cb("prop"))
     diag = {"prop_band": diag}
     jb = cfg["detect"].get("jet_band_hz")
     if high is not None and jb:
-        jev, jdiag = detect_events(high, cfg, c, band=jb, min_spread=cfg["detect"]["jet_min_spread_hz"])
+        jev, jdiag = detect_events(high, cfg, c, band=jb, min_spread=cfg["detect"]["jet_min_spread_hz"],
+                                   on_window=cb("jet"))
         diag["jet_band"] = jdiag
         events = events + jev
     events.sort(key=lambda m: m.t_cpa_heard)

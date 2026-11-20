@@ -18,7 +18,9 @@
   const queue = [];
   let busyUntil = 0;
   const S = {spec: null, img: null, reveal: 0, ridges: [], flyovers: [], rejected: [], scanning: false,
-             expected: null};
+             expected: null, win: null, trials: [], hits: [], cand: null, bestCand: null, nHits: 0};
+  // a long backlog (e.g. opening a page mid-run) plays quickly instead of crawling one window at a time
+  const pace = ms => (!animate ? 0 : queue.length > 150 ? 0 : queue.length > 40 ? ms / 4 : ms);
 
   // ------------------------------------------------------------------ stage chips + ticker + counters
   const stages = ['audio', 'detect', 'flights', 'search', 'rank'];
@@ -61,12 +63,50 @@
   sizeCanvas();
   window.addEventListener('resize', sizeCanvas);
   const PAD = {l: 46, r: 10, t: 12, b: 26};
-  const X = t => { const d = window.devicePixelRatio || 1, w = cv.width - (PAD.l + PAD.r) * d;
-    return PAD.l * d + (t - S.spec.t0) / (S.spec.t1 - S.spec.t0) * w; };
+  // ---- zoom: the visible part of the spectrogram glides to each drop as it is found, then back out
+  let V = null, Z = null;  // V: current view {t0,t1,f0,f1}; Z: running zoom animation
+  const fullView = () => ({t0: S.spec.t0, t1: S.spec.t1, f0: S.spec.f0, f1: S.spec.f1});
+  const isLog = () => S.spec.scale === 'log';
+  const fq = (f, v) => isLog() ? Math.log(Math.max(f, 1) / v.f0) / Math.log(v.f1 / v.f0) : (f - v.f0) / (v.f1 - v.f0);
+  function view() {
+    if (!Z) return V || fullView();
+    const k = ease((now() - Z.start) / Z.dur), a = Z.from, b = Z.to;
+    const lerp = (p, q) => p + (q - p) * k, glerp = (p, q) => isLog() ? p * Math.pow(q / p, k) : lerp(p, q);
+    const v = {t0: lerp(a.t0, b.t0), t1: lerp(a.t1, b.t1), f0: glerp(a.f0, b.f0), f1: glerp(a.f1, b.f1)};
+    if (k >= 1) { V = b; Z = null; }
+    return v;
+  }
+  let zoomBackAt = 0, zoomLabel = '';
+  function zoomTo(t, f, label, hold) {
+    if (!animate || !S.spec || !t || t.length < 2) return;
+    const F = fullView();
+    const tl = Math.min(...t), th = Math.max(...t), fl = Math.min(...f), fh = Math.max(...f);
+    const padT = Math.max(4, (th - tl) * 0.15), ratio = isLog() ? 1.5 : 1;
+    const to = {t0: Math.max(F.t0, tl - padT), t1: Math.min(F.t1, th + padT),
+                f0: Math.max(F.f0, isLog() ? fl / ratio : fl - (fh - fl)), f1: Math.min(F.f1, isLog() ? fh * ratio : fh + (fh - fl))};
+    Z = {from: view(), to, start: now(), dur: 850};
+    zoomLabel = label; zoomBackAt = now() + hold;
+  }
+  function zoomOut() {
+    if (!S.spec || (!V && !Z)) return;
+    Z = {from: view(), to: fullView(), start: now(), dur: 700};
+    zoomLabel = ''; zoomBackAt = 0;
+    setTimeout(() => { if (!Z) V = null; }, 760);
+  }
+  let CV = null;  // view used by the frame being drawn
+  const X = t => { const d = window.devicePixelRatio || 1, w = cv.width - (PAD.l + PAD.r) * d, v = CV || fullView();
+    return PAD.l * d + (t - v.t0) / (v.t1 - v.t0) * w; };
   const Y = f => { const d = window.devicePixelRatio || 1, h = cv.height - (PAD.t + PAD.b) * d;
-    const q = S.spec.scale === 'log' ? Math.log(Math.max(f, 1) / S.spec.f0) / Math.log(S.spec.f1 / S.spec.f0)
-                                     : (f - S.spec.f0) / (S.spec.f1 - S.spec.f0);
-    return PAD.t * d + (1 - q) * h; };
+    return PAD.t * d + (1 - fq(f, CV || fullView())) * h; };
+
+  function drawCurve(t, f, color, lw, dash, glow) {
+    if (!Array.isArray(t) || !Array.isArray(f) || t.length < 2) return;
+    g.save(); g.strokeStyle = color; g.lineWidth = lw; g.setLineDash(dash || []);
+    if (glow) { g.shadowColor = color; g.shadowBlur = glow; }
+    g.beginPath(); g.moveTo(X(t[0]), Y(f[0]));
+    for (let i = 1; i < t.length; i++) g.lineTo(X(t[i]), Y(f[i]));
+    g.stroke(); g.restore();
+  }
 
   function drawSpec() {
     const d = window.devicePixelRatio || 1;
@@ -77,9 +117,15 @@
       return;
     }
     const x0 = PAD.l * d, y0 = PAD.t * d, w = cv.width - (PAD.l + PAD.r) * d, h = cv.height - (PAD.t + PAD.b) * d;
+    if (zoomBackAt && now() > zoomBackAt) zoomOut();
+    CV = view();
+    const F = fullView(), iw = S.img.naturalWidth, ih = S.img.naturalHeight;
+    const sx = (CV.t0 - F.t0) / (F.t1 - F.t0) * iw, sw = (CV.t1 - CV.t0) / (F.t1 - F.t0) * iw;
+    const sy = (1 - fq(CV.f1, F)) * ih, sh = (fq(CV.f1, F) - fq(CV.f0, F)) * ih;
     const rv = animate ? ease((now() - S.reveal) / 1400) : 1;
     g.save(); g.beginPath(); g.rect(x0, y0, w * rv, h); g.clip();
-    g.drawImage(S.img, x0, y0, w, h);
+    g.imageSmoothingEnabled = true;
+    g.drawImage(S.img, sx, sy, Math.max(1, sw), Math.max(1, sh), x0, y0, w, h);
     g.restore();
     if (rv < 1) {  // glowing reveal edge
       const ex = x0 + w * rv;
@@ -89,27 +135,60 @@
     }
     // axes
     g.fillStyle = 'rgba(255,255,255,.55)'; g.font = `${11 * d}px system-ui`; g.textAlign = 'right';
-    const ticks = S.spec.scale === 'log' ? [50, 100, 200, 300, 500, 1000, 2000, 3000].filter(f => f >= S.spec.f0 && f <= S.spec.f1)
-      : Array.from({length: 20}, (_, k) => (Math.ceil(S.spec.f0 / 50) + k) * 50).filter(f => f <= S.spec.f1);
+    const cand = isLog() ? [40, 50, 60, 70, 80, 90, 100, 120, 140, 160, 180, 200, 250, 300, 400, 500, 600, 800, 1000, 1500, 2000, 3000]
+      : Array.from({length: 60}, (_, k) => (Math.ceil(CV.f0 / 10) + k) * 10);
+    const ticks = [];
+    for (const f of cand.filter(f => f >= CV.f0 && f <= CV.f1)) if (!ticks.length || Y(ticks[ticks.length - 1]) - Y(f) > 22 * d) ticks.push(f);
     for (const f of ticks) {
       g.fillText((f >= 1000 ? f / 1000 + 'k' : f) + ' Hz', x0 - 6 * d, Y(f) + 4 * d);
       g.fillStyle = 'rgba(255,255,255,.06)'; g.fillRect(x0, Y(f), w, 1); g.fillStyle = 'rgba(255,255,255,.55)';
     }
     g.textAlign = 'center';
-    const span = S.spec.t1 - S.spec.t0, tstep = span > 600 ? 120 : span > 240 ? 60 : span > 90 ? 20 : span > 40 ? 10 : 5;
-    for (let t = 0; t <= S.spec.t1; t += tstep) if (t >= S.spec.t0) g.fillText(t + ' s', X(t), cv.height - 8 * d);
-    // detection scan beam
-    if (S.scanning && animate) {
-      const k = ((now() / 1400) % 1);
-      const bx = x0 + w * k;
-      const grd = g.createLinearGradient(bx - 60 * d, 0, bx, 0);
-      grd.addColorStop(0, 'rgba(255,255,255,0)'); grd.addColorStop(1, 'rgba(255,255,255,.22)');
-      g.fillStyle = grd; g.fillRect(bx - 60 * d, y0, 60 * d, h);
+    const span = CV.t1 - CV.t0, tstep = span > 600 ? 120 : span > 240 ? 60 : span > 90 ? 20 : span > 40 ? 10 : span > 15 ? 5 : 2;
+    for (let t = Math.ceil(CV.t0 / tstep) * tstep; t <= CV.t1; t += tstep) g.fillText(t + ' s', X(t), cv.height - 8 * d);
+    // everything below stays inside the plot, also while zoomed
+    g.save(); g.beginPath(); g.rect(x0, y0, w, h); g.clip();
+    if (zoomLabel || Z) {  // zoom badge
+      const zl = zoomLabel || 'zooming out';
+      g.font = `600 ${11 * d}px system-ui`; g.textAlign = 'right';
+      const tw = g.measureText(zl).width;
+      g.fillStyle = 'rgba(8,11,17,.85)'; g.fillRect(x0 + w - tw - 14 * d, y0 + 6 * d, tw + 10 * d, 18 * d);
+      g.fillStyle = '#7ee6a0'; g.fillText(zl, x0 + w - 9 * d, y0 + 19 * d);
+      g.textAlign = 'left';
+    }
+    // search: the candidate flight's predicted pitch curve vs the recording
+    const drawCand = (C, color, label, dash) => {
+      if (!C) return;
+      C.curves.forEach((cv_, j) => {
+        if (!cv_.t || cv_.t.length < 2) return;
+        drawCurve(cv_.t, cv_.f, color, 2.5 * d, dash, 12 * d);
+        const fl = C.flights[j] || {}, mid = Math.floor(cv_.t.length * 0.2);
+        g.font = `600 ${11 * d}px system-ui`; g.textAlign = 'left';
+        const txt = `${label} ${fl.icao24 || ''}${fl.type_code ? ' · ' + fl.type_code : ''}`;
+        const lx = Math.max(x0 + 4 * d, Math.min(X(cv_.t[mid]), x0 + w - g.measureText(txt).width - 8 * d));
+        const ly = Math.max(y0 + 34 * d, Y(cv_.f[mid]) - 10 * d);
+        g.fillStyle = 'rgba(8,11,17,.8)'; g.fillRect(lx - 3 * d, ly - 12 * d, g.measureText(txt).width + 6 * d, 16 * d);
+        g.fillStyle = color; g.fillText(txt, lx, ly);
+      });
+    };
+    if (S.cand && S.cand !== S.bestCand) drawCand(S.cand, 'rgba(95,211,255,.95)', 'trying', [8 * d, 6 * d]);
+    drawCand(S.bestCand, '#7ee6a0', S.cand && S.cand !== S.bestCand ? 'best so far' : 'best match', []);
+    if (S.win && S.scanning) {
+      const W = S.win, wx0 = X(W.s), wx1 = X(W.e), col = W.band === 'jet' ? '255,190,90' : '95,211,255';
+      g.fillStyle = `rgba(${col},.10)`; g.fillRect(wx0, y0, wx1 - wx0, h);
+      g.strokeStyle = `rgba(${col},.9)`; g.lineWidth = 1.5 * d; g.strokeRect(wx0, y0 + 1, wx1 - wx0, h - 2);
+      const [blo, bhi] = W.band === 'jet' ? [300, 3000] : [60, 300];
+      g.fillStyle = `rgba(${col},.07)`; g.fillRect(wx0, Y(bhi), wx1 - wx0, Y(blo) - Y(bhi));
+      g.font = `600 ${11 * d}px system-ui`; g.textAlign = 'left';
+      const lbl = `${W.band === 'jet' ? 'jet band' : 'prop band'} · ${Math.round(W.s)}–${Math.round(W.e)} s · tone ${Math.round(W.cover * 100)} %`;
+      const lx = Math.min(wx0 + 4 * d, x0 + w - g.measureText(lbl).width - 8 * d);
+      g.fillStyle = 'rgba(8,11,17,.8)'; g.fillRect(lx - 3 * d, y0 + h - 20 * d, g.measureText(lbl).width + 6 * d, 16 * d);
+      g.fillStyle = `rgb(${col})`; g.fillText(lbl, lx, y0 + h - 8 * d);
     }
     // rejected stretches
     for (const r of S.rejected) {
       const a = animate ? ease((now() - r.born) / 500) : 1;
-      g.fillStyle = `rgba(255,90,90,${0.10 * a})`;
+      g.fillStyle = `rgba(255,90,90,${0.035 * a})`;
       g.fillRect(X(r.window_s[0]), y0, X(r.window_s[1]) - X(r.window_s[0]), h);
     }
     // tone points
@@ -120,6 +199,14 @@
       for (let i = 0; i < n * k; i++) { g.beginPath(); g.arc(X(R.t[i]), Y(R.f[i]), 1.6 * d, 0, 6.3); g.fill(); }
       g.shadowBlur = 0;
     }
+    // detection: curves fitted in the windows tried (green: fits a passing plane, red dashes: rejected)
+    for (const hcv of S.hits) drawCurve(hcv.t, hcv.f, 'rgba(126,230,160,.9)', 2.5 * d, [], 8 * d);
+    for (const tr of S.trials) {
+      const a = 1 - Math.min(1, (now() - tr.born) / 1600);
+      if (a <= 0) continue;
+      drawCurve(tr.t, tr.f, tr.ok ? `rgba(126,230,160,${a})` : `rgba(255,120,120,${0.95 * a})`, 3 * d, tr.ok ? [] : [6 * d, 4 * d], tr.ok ? 10 * d : 0);
+    }
+    S.trials = S.trials.filter(tr => now() - tr.born < 1600);
     // fitted flyover curves
     S.flyovers.forEach((fo, idx) => {
       const k = animate ? ease((now() - fo.born) / 1300) : 1;
@@ -179,6 +266,7 @@
       }
       g.restore();
     }
+    g.restore();  // plot clip
     requestAnimationFrame(drawSpec);
   }
   requestAnimationFrame(drawSpec);
@@ -267,7 +355,7 @@
     stage(e) {
       setStage(e.stage);
       if (e.stage === 'detect') { S.scanning = true; $('lv-speccap').textContent = 'Listening for engine tones…'; }
-      if (e.stage === 'flights') S.scanning = false;
+      if (e.stage === 'flights') { S.scanning = false; S.win = null; S.hits = []; }
       const msg = {audio: 'Reading the recording', detect: 'Looking for planes passing', flights: 'Loading flight paths for that time',
                    search: 'Searching the area', rank: 'Ranking the candidate spots'}[e.stage];
       if (msg) tick(msg, 'stage');
@@ -297,15 +385,39 @@
       if (e.items.length) tick(`${e.items.length} stretch${e.items.length > 1 ? 'es' : ''} without a clean flyover`, 'warn');
       return 400;
     },
+    window(e) {
+      S.scanning = true; S.win = e;
+      if (Array.isArray(e.f) && animate) S.trials.push({t: e.t, f: e.f, ok: e.ok, born: now()});
+      if (e.ok && Array.isArray(e.f)) {
+        S.hits.push({t: e.t, f: e.f}); S.nHits++;
+        zoomTo(e.t, e.f, `🔍 possible pass · ${Math.round(e.s)}–${Math.round(e.e)} s`, 1900);
+        tick(`Possible ${e.band === 'jet' ? 'jet' : 'plane'} pass around ${Math.round((e.s + e.e) / 2)} s: the tone bends like a Doppler curve`, 'good');
+      }
+      $('lv-speccap').textContent = `${e.band === 'jet' ? 'Jet band' : 'Propeller band'}: window ${e.i + 1} of ${e.n}` +
+        (e.ok ? ' · curve fits' : e.reason ? ' · ' + e.reason.split(' (')[0] : '') +
+        (S.nHits ? ` · ${S.nHits} possible pass${S.nHits > 1 ? 'es' : ''}` : '');
+      return e.ok && animate && queue.length <= 150 ? 2400 : pace(45);
+    },
+    candidate(e) {
+      S.cand = e;
+      if (!S.bestCand || (e.score ?? -Infinity) > (S.bestCand.score ?? -Infinity)) S.bestCand = e;
+      const names = e.flights.map(f => `<b>${f.icao24}</b>${f.type_code ? ' (' + f.type_code + ')' : ''}`).join(' + ');
+      $('lv-speccap').textContent = `Flight ${e.combo + 1} of ${e.n}: ${e.flights.map(f => f.icao24).join(' + ')}` +
+        ' · dashed = its predicted pitch, green = best match so far';
+      tick(`Tried ${names}: predicted pitch curve scored ${e.score != null ? Math.round(e.score).toLocaleString() : '—'}` +
+           (S.bestCand === e ? ' · <b>best so far</b>' : ''), S.bestCand === e ? 'good' : '');
+      return pace(e.n > 30 ? 150 : 900);
+    },
     flyover(e) {
-      S.scanning = false;
+      S.scanning = false; S.win = null; S.trials = []; S.hits = [];
       S.flyovers.push({...e, born: now()});
+      zoomTo(e.t, e.f, `🔍 ${e.kind === 'jet' ? 'jet' : 'plane'} ${e.i + 1} · closest at ${e.t_cpa.toFixed(1)} s`, 2600);
       $('lv-speccap').textContent = `${S.flyovers.length} flyover${S.flyovers.length > 1 ? 's' : ''} found`;
       tick(`<b>${e.kind === 'jet' ? 'Jet' : 'Propeller plane'} ${e.i + 1}</b>: ~${Math.round(e.v)} m/s, closest ~${(e.d / 1000).toFixed(1)} km, engine tone ${e.f0.toFixed(1)} Hz`, 'good');
-      return 1500;
+      return animate ? 3200 : 0;
     },
     expected(e) {
-      S.scanning = false;
+      S.scanning = false; S.win = null; S.hits = [];
       S.expected = {...e, born: now()};
       $('lv-speccap').textContent = 'No complete flyover found: here is what was expected, and where it looked';
       tick('No complete plane pass found. The dashed white curve shows what one would look like; red dashes are the closest attempts.', 'warn');
@@ -319,6 +431,7 @@
       return 1500;
     },
     tracks(e) {
+      if (!map) return 0;
       e.tracks.forEach((tr, i) => {
         const pl = L.polyline(tr.lat.map((v, k) => [v, tr.lon[k]]), {renderer: svg, className: 'lv-track', color: css('--accent'),
           weight: 2, opacity: 0.85, interactive: true})
@@ -354,6 +467,7 @@
     },
     result(e) {
       setStage('rank', true);
+      S.cand = S.bestCand;
       moveBest(e.lat, e.lon);
       if (animate) map.flyTo([e.lat, e.lon], 14, {duration: 2.0}); else map.setView([e.lat, e.lon], 14);
       setTimeout(() => {

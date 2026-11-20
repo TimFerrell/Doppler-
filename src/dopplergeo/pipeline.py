@@ -176,6 +176,31 @@ def candidate_tracks_per_event(tracks, events, proj, region_radius_m, cfg, audio
     return out
 
 
+def _emit_candidate(live, ci, n, name, res, cb, sub_tracks, events, elev, c) -> None:
+    """Live view: the predicted pitch curve of each flight in this set, heard from its best spot so far."""
+    if not live.enabled or res.empty:
+        return
+    top = res.loc[res["score"].idxmax()]
+    r = geo.lla_to_ecef(top["lat"], top["lon"], elev(top["lat"], top["lon"]))
+    curves, flights = [], []
+    for i, ev in enumerate(events):
+        tr = cb[i][0]
+        flights.append({"icao24": tr.icao24, "type_code": tr.type_code, "key": tr.key})
+        try:
+            dt_i = top["dt1"] if i == 0 else 0.0
+            f0_i = ev.meas.f0 + top[f"df_e{i + 1}"]
+            t_rel = ev.scorer.tf
+            f = model.forward_curve(r, sub_tracks[i], f0_i, t_rel - dt_i + top["T0"], c)
+            k = max(1, len(t_rel) // 160)
+            t_, f_ = np.asarray(t_rel)[::k], np.asarray(f, float)[::k]
+            good = np.isfinite(f_)
+            curves.append({"event": i, "t": np.round(t_[good], 2), "f": np.round(f_[good], 2),
+                           "score": float(top[f"score_e{i + 1}"])})
+        except Exception:  # noqa: BLE001 -- a picture, never a reason to stop the search
+            curves.append({"event": i, "t": [], "f": []})
+    live.candidate(ci, n, name, flights, curves, float(top["score"]))
+
+
 def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, float], radius_m: float,
            elev: geo.Elevation, c: float, cfg: dict, time_ref: str, audio_start: float | None,
            slog: StageLog, live=None) -> tuple[pd.DataFrame, gridmod.Grid]:
@@ -249,6 +274,7 @@ def search(events: list[Event], tracks: list[adsb.Track], center: tuple[float, f
             stage_res.append(r2)
             cur = pd.concat([cur.nlargest(int(g["refine_top_n"]), "score"), r2], ignore_index=True)
         results.append(pd.concat(stage_res, ignore_index=True))
+        _emit_candidate(live, ci, len(combos), name, results[-1], cb, sub_tracks, events, elev, c)
     allres = pd.concat(results, ignore_index=True)
     allres["dist_center_m"] = np.hypot(allres["x"], allres["y"])
     return allres, base
@@ -336,7 +362,8 @@ def _run_locate(live, audio_path, adsb_df, center, radius_m, cfg, out_dir, c, ev
         if events_spec == "whole":
             meas = [measure.fit_curve(spec, cfg, c)[0]]
         elif events_spec == "auto":
-            meas, detect_diag = measure.detect_all(spec, high, cfg, c)
+            meas, detect_diag = measure.detect_all(spec, high, cfg, c,
+                                                   on_window=lambda band, *a: live.window(band, *a, c=c))
         else:
             meas = [measure.fit_manual(spec, high, cfg, c, float(t)) for t in events_spec]
     bad = [i + 1 for i, m in enumerate(meas) if not m.success]

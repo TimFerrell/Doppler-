@@ -27,6 +27,10 @@ class LiveFeed:
             except OSError:
                 self._fh = None
 
+    @property
+    def enabled(self) -> bool:
+        return self._fh is not None
+
     def emit(self, type_: str, **data) -> None:
         if self._fh is None:
             return
@@ -65,6 +69,23 @@ class LiveFeed:
         ff = straight_line_curve(tt, meas.f0, meas.v, meas.d, meas.t_cpa, c)
         self.emit("flyover", i=i, t=np.round(tt, 2), f=np.round(ff, 2), t_cpa=meas.t_cpa_heard, f0=meas.f0, v=meas.v,
                   d=meas.d, rms=meas.rms_hz, t_lo=meas.t_lo, t_hi=meas.t_hi, kind=("jet" if meas.is_high else "prop"))
+
+    def window(self, band: str, i: int, n: int, rec: dict, meas, ok: bool, c: float) -> None:
+        """One detection window tried: where, how much tone, the curve fitted there and the verdict."""
+        from .model import straight_line_curve
+
+        data = dict(band=band, i=i, n=n, s=rec["window_s"][0], e=rec["window_s"][1], cover=rec["tone_coverage"],
+                    ok=bool(ok), reason=(rec["reasons"][0] if rec["reasons"] else ""))
+        if meas is not None and all(np.isfinite([meas.f0, meas.v, meas.d, meas.t_cpa])):
+            tt = np.linspace(rec["window_s"][0], rec["window_s"][1], 48)
+            ff = straight_line_curve(tt, meas.f0, meas.v, meas.d, meas.t_cpa, c)
+            good = np.isfinite(ff)
+            data.update(t=np.round(tt[good], 2), f=np.round(ff[good], 2), rms=_fin(meas.rms_hz), f0=_fin(meas.f0))
+        self.emit("window", **data)
+
+    def candidate(self, combo: int, n: int, name: str, flights: list[dict], curves: list[dict], score: float) -> None:
+        """A candidate flight set has been scored: its predicted pitch curves at its best spot so far."""
+        self.emit("candidate", combo=combo, n=n, name=name, flights=flights, curves=curves, score=_fin(score))
 
     def tracks(self, per_event) -> None:
         feats = {}
@@ -111,6 +132,11 @@ class LiveFeed:
             except OSError:
                 pass
             self._fh = None
+
+
+def _fin(x):
+    x = float(x)
+    return round(x, 3) if np.isfinite(x) else None
 
 
 def _jsonable(o):

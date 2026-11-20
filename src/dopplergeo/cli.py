@@ -142,7 +142,8 @@ def cmd_measure(args, cfg) -> int:
     ev = _events_arg(args, cfg)
     diag = None
     if ev == "auto":
-        meas, diag = measure.detect_all(spec, high, cfg, c)
+        meas, diag = measure.detect_all(spec, high, cfg, c,
+                                        on_window=lambda band, *a: live.window(band, *a, c=c))
     else:
         meas = [measure.fit_manual(spec, high, cfg, c, t) for t in ev]
     if diag:
