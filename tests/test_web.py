@@ -286,6 +286,7 @@ def test_example_recordings_listed_and_fetched_via_api(client, tmp_path, monkeyp
 
     c, _ = client
     monkeypatch.delenv("DOPPLERGEO_FREESOUND_KEY", raising=False)
+    monkeypatch.setenv("DOPPLERGEO_FREESOUND_KEY_FILE", str(tmp_path / "no-such-file"))
     html = c.get("/?tab=record").get_data(as_text=True)
     assert "Example recordings to test with" in html and "Open on Freesound" in html
     # no key: a clear message, nothing downloaded
@@ -312,7 +313,9 @@ def test_example_recordings_listed_and_fetched_via_api(client, tmp_path, monkeyp
         return Resp(wav.getvalue())
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setenv("DOPPLERGEO_FREESOUND_KEY", "test-key")
+    kf = tmp_path / "freesound_key"
+    kf.write_text("test-key\n")
+    monkeypatch.setenv("DOPPLERGEO_FREESOUND_KEY_FILE", str(kf))
     assert "Fetch</button>" in c.get("/?tab=record").get_data(as_text=True)
     r = c.post("/recordings/examples/806057/fetch")
     assert r.status_code == 302, r.get_data(as_text=True)

@@ -782,6 +782,13 @@ def create_app(jobs_dir: str | Path = "data/out/web", base_config: str | Path | 
     def freesound_key() -> str | None:
         import os
 
+        # preferred: a read-only secret file (like the GitHub token), read per request so it never lands in job configs
+        f = Path(os.environ.get("DOPPLERGEO_FREESOUND_KEY_FILE") or "/run/secrets/freesound_key")
+        try:
+            if f.is_file() and f.read_text().strip():
+                return f.read_text().strip()
+        except OSError:
+            pass
         return os.environ.get("DOPPLERGEO_FREESOUND_KEY") or (cfg_preview.get("examples") or {}).get("freesound_api_key")
 
     @app.post("/recordings/examples/<int:sid>/fetch")

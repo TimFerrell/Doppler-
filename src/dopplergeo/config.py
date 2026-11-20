@@ -125,7 +125,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "examples": {
         # Your own free Freesound API key (freesound.org/apiv2/apply), used only for the 'Fetch' buttons of the
-        # example recordings. Or set the environment variable DOPPLERGEO_FREESOUND_KEY. Never commit it.
+        # example recordings. Preferred: a read-only file at /run/secrets/freesound_key (or DOPPLERGEO_FREESOUND_KEY_FILE). Never commit it.
         "freesound_api_key": None,
     },
     "search_mode": "local",  # local | area (Phase B, feature-flagged)
